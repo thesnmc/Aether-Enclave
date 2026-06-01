@@ -27,6 +27,11 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
 
     serial_println!("[AETHER] cold boot — COM1 ready, entering dormancy");
 
+    // QEMU / HIL: simulate physical O₂ threshold crossing → ISR → WASM → proof → annihilation.
+    mmio::sim_inject_o2_drop();
+    serial_println!("[AETHER] bench: software IRQ 0x20 (atmospheric threshold)");
+    interrupts::software_trigger(interrupts::HardwareInterrupt::AtmosphericPressureThreshold);
+
     dormancy_loop();
 }
 
