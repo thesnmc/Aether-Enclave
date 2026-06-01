@@ -4,7 +4,7 @@
 //! present, is bounded by [`crate::memory::SANDBOX_MEMORY_SIZE`].
 
 use wasmi::{
-    Caller, Config, Engine, Error, Extern, Func, Instance, Linker, Memory, MemoryType, Module, Store,
+    Caller, Config, Engine, Error, Extern, Instance, Linker, Memory, MemoryType, Module, Store,
     TypedFunc,
 };
 use wasmi::errors::MemoryError;
@@ -75,38 +75,50 @@ impl HostCalls {
     }
 }
 
-/// Emit a wasmi failure on COM1 before annihilation (no `Error` formatting — avoids alloc panic).
-fn log_wasm_trap() {
-    serial_println!(
-        "[AETHER] WASM TRAP TRIGGERED (Skipping formatting to prevent alloc panic)"
-    );
+/// Classify a wasmi failure on COM1 without formatting the error (no alloc).
+fn log_wasmi_error(e: &Error) {
+    match e {
+        Error::Linker(_) => {
+            serial_println!("[AETHER] ERR: Linker (Import Mismatch)");
+        }
+        Error::Instantiation(_) => {
+            serial_println!("[AETHER] ERR: Instantiation");
+        }
+        Error::Trap(_) => {
+            serial_println!("[AETHER] ERR: Trap");
+        }
+        _ => {
+            serial_println!("[AETHER] ERR: Unknown");
+        }
+    }
 }
 
-/// Register the full `aether` host API on the linker.
-fn link_aether_host(
-    linker: &mut Linker<HostState>,
-    store: &mut Store<HostState>,
-) -> Result<(), Error> {
-    linker.define(
-        HOST_IMPORT_MODULE,
-        "read_atmospheric_pressure",
-        Func::wrap(&mut *store, HostCalls::read_atmospheric_pressure),
-    )?;
-    linker.define(
-        HOST_IMPORT_MODULE,
-        "read_radiation_dosimeter",
-        Func::wrap(&mut *store, HostCalls::read_radiation_dosimeter),
-    )?;
-    linker.define(
-        HOST_IMPORT_MODULE,
-        "commit_telemetry_vector",
-        Func::wrap(&mut *store, HostCalls::commit_telemetry_vector),
-    )?;
-    linker.define(
-        HOST_IMPORT_MODULE,
-        "commit_uplink",
-        Func::wrap(&mut *store, HostCalls::commit_uplink),
-    )?;
+/// Register the full `aether` host API on the linker (signatures must match guest imports).
+fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
+    linker
+        .func_wrap(
+            HOST_IMPORT_MODULE,
+            "read_atmospheric_pressure",
+            HostCalls::read_atmospheric_pressure,
+        )
+        .map_err(Error::from)?;
+    linker
+        .func_wrap(
+            HOST_IMPORT_MODULE,
+            "read_radiation_dosimeter",
+            HostCalls::read_radiation_dosimeter,
+        )
+        .map_err(Error::from)?;
+    linker
+        .func_wrap(
+            HOST_IMPORT_MODULE,
+            "commit_telemetry_vector",
+            HostCalls::commit_telemetry_vector,
+        )
+        .map_err(Error::from)?;
+    linker
+        .func_wrap(HOST_IMPORT_MODULE, "commit_uplink", HostCalls::commit_uplink)
+        .map_err(Error::from)?;
     Ok(())
 }
 
@@ -123,8 +135,7 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
         }
         Err(e) => {
             serial_println!("[AETHER] TRACER: instantiate ERR");
-            let _ = e;
-            log_wasm_trap();
+            log_wasmi_error(&e);
             fault_shutdown(trigger, -1);
             return;
         }
@@ -138,8 +149,7 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
         }
         Err(e) => {
             serial_println!("[AETHER] TRACER: diagnostic ERR");
-            let _ = e;
-            log_wasm_trap();
+            log_wasmi_error(&e);
             fault_shutdown(trigger, -1);
             return;
         }
@@ -233,10 +243,21 @@ impl AetherHost {
 
         serial_println!("[AETHER] TRACER: link_aether_host");
         let mut linker = Linker::new(&engine);
-        link_aether_host(&mut linker, &mut store)?;
+        if let Err(e) = link_aether_host(&mut linker) {
+            serial_println!("[AETHER] TRACER: link_aether_host ERR");
+            log_wasmi_error(&e);
+            return Err(e);
+        }
 
         serial_println!("[AETHER] TRACER: linker.instantiate");
-        let instance_pre = linker.instantiate(&mut store, &module)?;
+        let instance_pre = match linker.instantiate(&mut store, &module) {
+            Ok(pre) => pre,
+            Err(e) => {
+                serial_println!("[AETHER] TRACER: linker.instantiate ERR");
+                log_wasmi_error(&e);
+                return Err(e);
+            }
+        };
         serial_println!("[AETHER] TRACER: ensure_no_start");
         let instance = instance_pre.ensure_no_start(&mut store)?;
 

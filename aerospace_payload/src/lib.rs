@@ -44,7 +44,7 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
     }
 }
 
-/// Host syscall imports — signatures must mirror Wasm valtypes (`f32` = `0x7D`, `i32` = `0x7F`).
+// Host syscall imports — signatures must mirror Wasm valtypes (`f32` = `0x7D`, `i32` = `0x7F`).
 #[link(wasm_import_module = "aether")]
 extern "C" {
     fn read_atmospheric_pressure() -> f32;
@@ -56,8 +56,30 @@ extern "C" {
 /// Evaluate pressure + radiation limits, commit telemetry, return combined status flags as `i32`.
 #[no_mangle]
 pub extern "C" fn evaluate_limits() -> i32 {
-    // TEMP(isolation): bypass sensors/host syscalls — expect `guest=99` in shutdown report.
-    99
+    let pressure = unsafe { read_atmospheric_pressure() };
+    let dose = unsafe { read_radiation_dosimeter() } as u32;
+
+    let mut flags = STATUS_OK;
+    if pressure < PRESSURE_LIMIT_ATM {
+        flags |= STATUS_PRESSURE_LOW;
+    }
+    if dose > DOSE_LIMIT {
+        flags |= STATUS_DOSE_HIGH;
+    }
+
+    let record = TelemetryRecord {
+        flags: flags as u8,
+        _pad: [0; 3],
+        pressure_bits: pressure.to_bits(),
+        dose,
+    };
+    let ptr = (&record as *const TelemetryRecord) as i32;
+    let len = core::mem::size_of::<TelemetryRecord>() as i32;
+    unsafe {
+        commit_telemetry_vector(ptr, len);
+    }
+
+    flags
 }
 
 /// Exported alias — same symbol the host resolves first when both are present.
