@@ -50,6 +50,7 @@ dependencies = [
  "bootloader",
  "spin",
  "wasmi",
+ "wasmi_core",
  "x86_64",
 ]
 
