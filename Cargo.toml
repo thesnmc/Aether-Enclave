@@ -19,7 +19,7 @@ bench = false
 [dependencies]
 # Embedded WASM interpreter (no default std; uses core + alloc from our static pool)
 wasmi = { version = "0.31", default-features = false }
-spin = { version = "0.9", default-features = false }
+spin = { version = "0.9", default-features = false, features = ["once", "mutex"] }
 bitflags = { version = "2.6", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]

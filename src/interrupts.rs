@@ -114,18 +114,24 @@ fn dispatch_isr(vector: u8) {
 mod x86 {
     use super::*;
     use core::sync::atomic::AtomicBool;
+    use spin::Once;
     use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
+
     static IDT_READY: AtomicBool = AtomicBool::new(false);
 
-    static mut IDT: InterruptDescriptorTable = InterruptDescriptorTable::new();
+    /// Platform IDT — `Once` yields a `&'static` table required by [`InterruptDescriptorTable::load`].
+    /// A [`spin::Mutex`] guard cannot satisfy that lifetime contract without leaking.
+    static IDT: Once<InterruptDescriptorTable> = Once::new();
 
     pub fn init_idt() {
-        unsafe {
-            IDT[HardwareInterrupt::AtmosphericPressureThreshold as u8]
+        let idt = IDT.call_once(|| {
+            let mut table = InterruptDescriptorTable::new();
+            table[HardwareInterrupt::AtmosphericPressureThreshold as u8]
                 .set_handler_fn(isr_atmospheric);
-            IDT[HardwareInterrupt::KineticJointActuation as u8].set_handler_fn(isr_kinetic);
-            IDT.load();
-        }
+            table[HardwareInterrupt::KineticJointActuation as u8].set_handler_fn(isr_kinetic);
+            table
+        });
+        idt.load();
         IDT_READY.store(true, Ordering::Release);
     }
 

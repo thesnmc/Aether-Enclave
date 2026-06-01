@@ -5,11 +5,12 @@
 //! - [`ARENA`] — separate bump arena for host/runtime allocations (wasmi engine, etc.).
 //! - [`ISR_STACK`] — 4 KiB dedicated stack for interrupt service (isolated from main).
 //!
-//! No heap fragmentation: all sizes are compile-time constants.
+//! All backing stores sit behind [`spin::Mutex`] guards so the modern toolchain never
+//! forms shared references to `static mut`. Buffer addresses are link-time stable.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::ptr::NonNull;
-use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
 /// WASM linear memory page size (64 KiB) — single static sandbox page.
@@ -21,21 +22,30 @@ pub const ARENA_SIZE: usize = 128 * 1024;
 /// ISR stack size — must satisfy worst-case sovereign bootstrap + interpreter depth.
 pub const ISR_STACK_SIZE: usize = 4 * 1024;
 
-/// 16-byte aligned static blob (Rust does not allow `#[repr(align)]` on statics directly).
+/// 16-byte aligned static blob.
 #[repr(C, align(16))]
 struct AlignedBytes<const N: usize>([u8; N]);
 
+/// Bump arena buffer plus allocation cursor (single lock domain).
+struct ArenaState {
+    bytes: AlignedBytes<ARENA_SIZE>,
+    cursor: usize,
+}
+
 /// Guest linear memory backing (WASM address space index 0).
-static mut SANDBOX_MEMORY: AlignedBytes<SANDBOX_MEMORY_SIZE> = AlignedBytes([0; SANDBOX_MEMORY_SIZE]);
+static SANDBOX_MEMORY: Mutex<AlignedBytes<SANDBOX_MEMORY_SIZE>> =
+    Mutex::new(AlignedBytes([0; SANDBOX_MEMORY_SIZE]));
 
 /// Host allocation arena (never shared with guest mappings).
-static mut ARENA: AlignedBytes<ARENA_SIZE> = AlignedBytes([0; ARENA_SIZE]);
+static ARENA: Mutex<ArenaState> = Mutex::new(ArenaState {
+    bytes: AlignedBytes([0; ARENA_SIZE]),
+    cursor: 0,
+});
 
 /// Interrupt-service stack (grows downward; SP initialized to top).
-static mut ISR_STACK: AlignedBytes<ISR_STACK_SIZE> = AlignedBytes([0; ISR_STACK_SIZE]);
+static ISR_STACK: Mutex<AlignedBytes<ISR_STACK_SIZE>> =
+    Mutex::new(AlignedBytes([0; ISR_STACK_SIZE]));
 
-static ARENA_CURSOR: AtomicUsize = AtomicUsize::new(0);
-static ARENA_LOCK: Mutex<()> = Mutex::new(());
 static SANDBOX_SEALED: AtomicBool = AtomicBool::new(false);
 
 /// Memory protection fault taxonomy.
@@ -52,6 +62,9 @@ pub enum MemoryFault {
 }
 
 /// Immutable view of the sandbox for host-side validation.
+///
+/// Holds a raw base pointer into the mutex-backed static buffer. The address remains
+/// valid for the program lifetime because the storage is never moved.
 pub struct SandboxRegion {
     base: *const u8,
     size: usize,
@@ -61,9 +74,11 @@ impl SandboxRegion {
     /// Obtain the static sandbox region descriptor.
     #[inline]
     pub fn get() -> Self {
-        // SAFETY: `SANDBOX_MEMORY` is `'static` and not relocated after link.
+        let guard = SANDBOX_MEMORY.lock();
+        let base = guard.0.as_ptr();
+        drop(guard);
         Self {
-            base: unsafe { SANDBOX_MEMORY.0.as_ptr() },
+            base,
             size: SANDBOX_MEMORY_SIZE,
         }
     }
@@ -90,10 +105,11 @@ impl SandboxRegion {
     /// Return a guest slice after validation.
     ///
     /// # Safety
-    /// Caller must respect WASM single-threaded aliasing rules.
+    /// Caller must respect WASM single-threaded aliasing rules and hold the sandbox lock
+    /// if another core could contend (unikernel is single-core; ISR masks IRQs).
     pub unsafe fn guest_slice(&self, offset: u32, len: usize) -> Result<&[u8], MemoryFault> {
         self.check_guest_slice(offset, len)?;
-        // SAFETY: Bounds checked via `check_guest_slice`; base is valid for `'static` sandbox storage.
+        // SAFETY: Bounds checked via `check_guest_slice`; base points at static sandbox storage.
         Ok(unsafe { core::slice::from_raw_parts(self.base.add(offset as usize), len) })
     }
 
@@ -134,27 +150,24 @@ impl SandboxRegion {
 
 /// Zero the sandbox and seal it against further guest access (post-run annihilation).
 pub fn annihilate_sandbox() {
-    // SAFETY: Unique ownership of SANDBOX_MEMORY during shutdown; interrupts masked.
-    unsafe {
-        core::ptr::write_bytes(SANDBOX_MEMORY.0.as_mut_ptr(), 0, SANDBOX_MEMORY_SIZE);
-    }
+    SANDBOX_MEMORY.lock().0.fill(0);
     SANDBOX_SEALED.store(true, Ordering::Release);
 }
 
 /// Reset arena cursor for a fresh boot cycle (called once per wake from dormancy).
 pub fn reset_arena() {
-    let _guard = ARENA_LOCK.lock();
-    ARENA_CURSOR.store(0, Ordering::Release);
+    let mut arena = ARENA.lock();
+    arena.cursor = 0;
+    arena.bytes.0.fill(0);
+    drop(arena);
     SANDBOX_SEALED.store(false, Ordering::Release);
-    unsafe {
-        core::ptr::write_bytes(SANDBOX_MEMORY.0.as_mut_ptr(), 0, SANDBOX_MEMORY_SIZE);
-    }
+    SANDBOX_MEMORY.lock().0.fill(0);
 }
 
 /// Top-of-stack address for ISR entry (x86 grows down).
 pub fn isr_stack_top() -> usize {
-    // SAFETY: ISR_STACK is static; address of one-past-last element is 16-byte aligned.
-        unsafe { ISR_STACK.0.as_ptr().add(ISR_STACK_SIZE) as usize }
+    let guard = ISR_STACK.lock();
+    guard.0.as_ptr().wrapping_add(ISR_STACK_SIZE) as usize
 }
 
 /// Bump allocator backing `wasmi` and transient host structures.
@@ -162,11 +175,11 @@ pub struct ArenaAllocator;
 
 unsafe impl GlobalAlloc for ArenaAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        let _guard = ARENA_LOCK.lock();
         let align = layout.align();
         let size = layout.size();
-        let cursor = ARENA_CURSOR.load(Ordering::Relaxed);
-        let aligned = (cursor + align - 1) & !(align - 1);
+
+        let mut arena = ARENA.lock();
+        let aligned = (arena.cursor + align - 1) & !(align - 1);
         let new_cursor = match aligned.checked_add(size) {
             Some(n) => n,
             None => return core::ptr::null_mut(),
@@ -174,9 +187,9 @@ unsafe impl GlobalAlloc for ArenaAllocator {
         if new_cursor > ARENA_SIZE {
             return core::ptr::null_mut();
         }
-        ARENA_CURSOR.store(new_cursor, Ordering::Relaxed);
-        // SAFETY: `[aligned, new_cursor)` lies wholly inside ARENA by bounds check above.
-        unsafe { ARENA.0.as_mut_ptr().add(aligned) }
+        let ptr = arena.bytes.0.as_mut_ptr().wrapping_add(aligned);
+        arena.cursor = new_cursor;
+        ptr
     }
 
     unsafe fn dealloc(&self, _ptr: *mut u8, _layout: Layout) {
