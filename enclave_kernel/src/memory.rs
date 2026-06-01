@@ -2,7 +2,7 @@
 //!
 //! ## Layout
 //! - [`SANDBOX_MEMORY`] — 64 KiB guest-linear memory backing store (WASM page).
-//! - [`ARENA`] — separate bump arena for host/runtime allocations (wasmi engine, etc.).
+//! - [`ARENA`] — separate bump arena for host/runtime allocations (wasmi engine, module compile, etc.).
 //! - [`ISR_STACK`] — 4 KiB dedicated stack for interrupt service (isolated from main).
 //!
 //! All backing stores sit behind [`spin::Mutex`] guards so the modern toolchain never
@@ -16,8 +16,11 @@ use spin::Mutex;
 /// WASM linear memory page size (64 KiB) — single static sandbox page.
 pub const SANDBOX_MEMORY_SIZE: usize = 64 * 1024;
 
-/// Host/runtime bump arena (128 KiB) — disjoint from guest sandbox.
-pub const ARENA_SIZE: usize = 128 * 1024;
+/// Host/runtime bump arena — global heap for `wasmi` and `alloc` (disjoint from guest sandbox).
+pub const ARENA_SIZE: usize = 4 * 1024 * 1024;
+
+/// Alias for the host heap size (`ARENA_SIZE`) — wasmi needs multi-MiB headroom to instantiate.
+pub const HEAP_SIZE: usize = ARENA_SIZE;
 
 /// ISR stack size — must satisfy worst-case sovereign bootstrap + interpreter depth.
 pub const ISR_STACK_SIZE: usize = 4 * 1024;

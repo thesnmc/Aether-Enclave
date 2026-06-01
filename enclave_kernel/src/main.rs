@@ -54,7 +54,8 @@ fn dormancy_loop() -> ! {
 }
 
 #[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
+fn panic(info: &PanicInfo) -> ! {
+    serial_println!("[AETHER] KERNEL PANIC: {}", info);
     shutdown::self_annihilate(shutdown::ShutdownReport {
         guest_result: -1,
         proof: 0,
