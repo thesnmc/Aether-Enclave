@@ -1,0 +1,38 @@
+[package]
+name = "aether_enclave"
+version = "0.1.0"
+edition = "2021"
+authors = ["AETHER-ENCLAVE Program"]
+description = "Atmospheric-State Execution Module — radiation-resilient no_std unikernel WASM host"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "aether_enclave"
+path = "src/lib.rs"
+
+[[bin]]
+name = "aether_enclave"
+path = "src/main.rs"
+test = false
+bench = false
+
+[dependencies]
+# Embedded WASM interpreter (no default std; uses core + alloc from our static pool)
+wasmi = { version = "0.31", default-features = false }
+spin = { version = "0.9", default-features = false }
+bitflags = { version = "2.6", default-features = false }
+
+[target.'cfg(target_arch = "x86_64")'.dependencies]
+x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+
+[profile.dev]
+panic = "abort"
+
+[profile.release]
+panic = "abort"
+lto = true
+codegen-units = 1
+opt-level = "z"
+
+[profile.release.package."*"]
+opt-level = "z"
