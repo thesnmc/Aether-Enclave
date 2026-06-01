@@ -1,7 +1,7 @@
 //! Static memory isolation for the WASM sandbox and global allocator.
 //!
 //! ## Layout
-//! - [`SANDBOX_MEMORY`] — 64 KiB guest-linear memory backing store (WASM page).
+//! - [`SANDBOX_MEMORY`] — guest-linear memory backing store (up to [`SANDBOX_MEMORY_SIZE`]).
 //! - [`ARENA`] — separate bump arena for host/runtime allocations (wasmi engine, module compile, etc.).
 //! - [`ISR_STACK`] — 4 KiB dedicated stack for interrupt service (isolated from main).
 //!
@@ -13,8 +13,11 @@ use core::ptr::NonNull;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 
-/// WASM linear memory page size (64 KiB) — single static sandbox page.
-pub const SANDBOX_MEMORY_SIZE: usize = 64 * 1024;
+/// WebAssembly linear memory page size (64 KiB per Wasm spec).
+pub const WASM_PAGE_SIZE: usize = 64 * 1024;
+
+/// Guest linear memory cap — must cover Rust `wasm32` static data, stack, and heap.
+pub const SANDBOX_MEMORY_SIZE: usize = 2 * 1024 * 1024;
 
 /// Host/runtime bump arena — global heap for `wasmi` and `alloc` (disjoint from guest sandbox).
 pub const ARENA_SIZE: usize = 4 * 1024 * 1024;

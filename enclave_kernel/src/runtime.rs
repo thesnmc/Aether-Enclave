@@ -11,7 +11,7 @@ use wasmi::errors::MemoryError;
 use wasmi_core::F32;
 
 use crate::interrupts::{self, HardwareInterrupt};
-use crate::memory::{self, MemoryFault, SandboxRegion};
+use crate::memory::{self, MemoryFault, SandboxRegion, SANDBOX_MEMORY_SIZE, WASM_PAGE_SIZE};
 use crate::mmio;
 use crate::serial_println;
 use crate::shutdown::{self, ShutdownReport};
@@ -305,10 +305,31 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
         .get_export(&mut *store, "memory")
         .and_then(Extern::into_memory)
     {
-        let sandbox = SandboxRegion::get();
-        let len = mem.data(&mut *store).len();
-        if len > sandbox.len() {
-            serial_println!("[AETHER] WASM TRAP (memory): guest linear memory exceeds sandbox");
+        let pages = mem.current_pages(&*store);
+        let page_count = u32::from(pages) as usize;
+        let guest_bytes = page_count.checked_mul(WASM_PAGE_SIZE).ok_or_else(|| {
+            serial_println!("[AETHER] WASM TRAP (memory): guest page count overflow");
+            Error::from(MemoryError::OutOfBoundsAccess)
+        })?;
+
+        // Cross-check: wasmi's byte slice must match pages × 64 KiB.
+        let data_len = mem.data(&mut *store).len();
+        if data_len != guest_bytes {
+            serial_println!(
+                "[AETHER] WASM TRAP (memory): page/byte mismatch (data={} pages×{}={})",
+                data_len,
+                page_count,
+                guest_bytes
+            );
+            return Err(Error::from(MemoryError::OutOfBoundsAccess));
+        }
+
+        if guest_bytes > SANDBOX_MEMORY_SIZE {
+            serial_println!(
+                "[AETHER] WASM TRAP (memory): guest {} bytes exceeds sandbox {} bytes",
+                guest_bytes,
+                SANDBOX_MEMORY_SIZE
+            );
             return Err(Error::from(MemoryError::OutOfBoundsAccess));
         }
         // Do not overwrite guest linear memory here — the module loader has already
