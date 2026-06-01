@@ -1,0 +1,15 @@
+# Bare-metal x86_64 target (bootloader + kernel). Override for Cortex-M:
+#   cargo build --target thumbv7em-none-eabihf
+[build]
+target = "x86_64-unknown-none"
+
+[unstable]
+build-std = ["core", "alloc", "compiler_builtins"]
+build-std-features = ["compiler-builtins-mem"]
+
+[target.x86_64-unknown-none]
+# Hand off running tasks to bootimage tool, which reads its configuration from Cargo.toml
+runner = "bootimage runner"
+rustflags = [
+    "-C", "relocation-model=static",
+]
