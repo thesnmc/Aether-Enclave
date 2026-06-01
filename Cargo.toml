@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 build = "build.rs"
 
 [build-dependencies]
-wat = "1.215.0"
+wat = "1.2"
 
 [lib]
 name = "aether_enclave"
@@ -22,7 +22,7 @@ bench = false
 
 [dependencies]
 # BIOS/UEFI boot protocol, stack setup, and BootInfo for QEMU / flight bring-up
-bootloader = { version = "=0.9.23", features = ["map_physical_memory"] }
+bootloader = { version = "0.9", features = ["map_physical_memory"] }
 # Embedded WASM interpreter (no default std; uses core + alloc from our static pool)
 wasmi = { version = "0.31", default-features = false }
 spin = { version = "0.9", default-features = false, features = ["once", "mutex"] }
@@ -42,3 +42,13 @@ opt-level = "z"
 
 [profile.release.package."*"]
 opt-level = "z"
+
+[package.metadata.bootimage]
+# This tells bootimage to use your absolute QEMU path and mount the generated disk
+run-command = [
+    "C:\\Program Files\\qemu\\qemu-system-x86_64.exe",
+    "-serial", "stdio",
+    "-display", "none",
+    "-device", "isa-debug-exit,iobase=0xf4,iosize=4",
+    "-drive", "format=raw,file={}",
+]

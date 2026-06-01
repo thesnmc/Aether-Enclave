@@ -50,14 +50,29 @@ fn clear_architectural_state() {
     }
 }
 
+/// QEMU `isa-debug-exit` I/O port (see `.cargo/config.toml` runner `-device`).
+const QEMU_DEBUG_EXIT_PORT: u16 = 0xf4;
+/// Exit code written to `isa-debug-exit` (QEMU terminates the process).
+const QEMU_DEBUG_EXIT_SUCCESS: u32 = 0x10;
+
 fn enter_absolute_halt() -> ! {
     #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "cli",
-            "hlt",
-            options(nomem, nostack, noreturn)
-        );
+    {
+        use x86_64::instructions::port::Port;
+
+        // SAFETY: Port 0xf4 is the isa-debug-exit device when QEMU provides it.
+        let mut debug_exit = Port::<u32>::new(QEMU_DEBUG_EXIT_PORT);
+        unsafe {
+            debug_exit.write(QEMU_DEBUG_EXIT_SUCCESS);
+        }
+
+        unsafe {
+            core::arch::asm!(
+                "cli",
+                "hlt",
+                options(nomem, nostack, noreturn)
+            );
+        }
     }
     #[cfg(not(target_arch = "x86_64"))]
     loop {
