@@ -20,14 +20,12 @@ bench = false
 [dependencies]
 bootloader = { version = "0.9", features = ["map_physical_memory"] }
 wasmi = { version = "0.31", default-features = false }
+wasmi_core = { version = "0.13", default-features = false }
 spin = { version = "0.9", default-features = false, features = ["once", "mutex"] }
 bitflags = { version = "2.6", default-features = false }
 
 [target.'cfg(target_arch = "x86_64")'.dependencies]
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
-
-[package.metadata.bootloader]
-target = "x86_64-unknown-none"
 
 [package.metadata.bootimage]
 run-command = [

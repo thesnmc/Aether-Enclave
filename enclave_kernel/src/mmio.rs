@@ -16,6 +16,12 @@ pub const REG_ATOMIC_O2_SENSOR: usize = 0xFEF0_0000;
 /// Simulated kinetic joint strain gauge.
 pub const REG_KINETIC_JOINT: usize = 0xFEF0_0004;
 
+/// Barometric / atmospheric pressure sensor (IEEE-754 `f32` bit pattern in a 32-bit word).
+pub const REG_ATMOSPHERIC_PRESSURE: usize = 0xFEF0_0008;
+
+/// Cumulative radiation dosimeter (millirad-equivalent counts).
+pub const REG_RADIATION_DOSIMETER: usize = 0xFEF0_000C;
+
 /// Uplink commit: low word = proof digest, high word = sequence / status flags.
 pub const REG_UPLINK_COMMIT_LO: usize = 0xFEF0_0010;
 /// High word of uplink commit register pair.
@@ -28,15 +34,25 @@ pub const PMU_CMD_DORMANT: u32 = 0x0000_0001;
 /// PMU: request hard reset.
 pub const PMU_CMD_HARD_RESET: u32 = 0xDEAD_0002;
 
+/// Maximum guest telemetry blob accepted by [`commit_telemetry_vector`].
+pub const TELEMETRY_VECTOR_CAP: usize = 64;
+
 static SIM_O2: AtomicU32 = AtomicU32::new(0x0000_4000);
 static SIM_KINETIC: AtomicU32 = AtomicU32::new(0);
+static SIM_ATM_PRESSURE_BITS: AtomicU32 = AtomicU32::new(f32::to_bits(0.21));
+static SIM_RADIATION: AtomicU32 = AtomicU32::new(450);
 static SIM_COMMIT_LO: AtomicU32 = AtomicU32::new(0);
 static SIM_COMMIT_HI: AtomicU32 = AtomicU32::new(0);
 static SIM_PMU: AtomicU32 = AtomicU32::new(0);
+static SIM_TELEMETRY_LEN: core::sync::atomic::AtomicUsize =
+    core::sync::atomic::AtomicUsize::new(0);
+static SIM_TELEMETRY: Mutex<[u8; TELEMETRY_VECTOR_CAP]> = Mutex::new([0; TELEMETRY_VECTOR_CAP]);
 
 /// Inject a simulated atmospheric trigger (test / pre-flight harness).
 pub fn sim_inject_o2_drop() {
     SIM_O2.store(0x0000_0100, Ordering::Release);
+    SIM_ATM_PRESSURE_BITS.store(f32::to_bits(0.12), Ordering::Release);
+    SIM_RADIATION.store(1_250, Ordering::Release);
 }
 
 /// Inject a simulated kinetic joint trigger.
@@ -54,6 +70,35 @@ pub fn read_atomic_o2() -> u32 {
 #[inline]
 pub fn read_kinetic_joint() -> u32 {
     unsafe { read_volatile_u32(REG_KINETIC_JOINT) }
+}
+
+/// Read atmospheric pressure (simulated partial pressure in atm).
+#[inline]
+pub fn read_atmospheric_pressure() -> f32 {
+    f32::from_bits(unsafe { read_volatile_u32(REG_ATMOSPHERIC_PRESSURE) })
+}
+
+/// Read radiation dosimeter (simulated cumulative dose units).
+#[inline]
+pub fn read_radiation_dosimeter() -> u32 {
+    unsafe { read_volatile_u32(REG_RADIATION_DOSIMETER) }
+}
+
+/// Copy guest telemetry vector into the MMIO staging buffer.
+pub fn commit_telemetry_vector(data: &[u8]) -> usize {
+    let len = data.len().min(TELEMETRY_VECTOR_CAP);
+    let mut buf = SIM_TELEMETRY.lock();
+    buf[..len].fill(0);
+    buf[..len].copy_from_slice(&data[..len]);
+    SIM_TELEMETRY_LEN.store(len, Ordering::Release);
+    len
+}
+
+/// Read back last committed telemetry (simulation / ground station stub).
+pub fn last_telemetry_vector() -> ([u8; TELEMETRY_VECTOR_CAP], usize) {
+    let len = SIM_TELEMETRY_LEN.load(Ordering::Acquire);
+    let buf = SIM_TELEMETRY.lock();
+    (*buf, len)
 }
 
 /// Commit proof words to uplink MMIO and return the combined 64-bit digest view.
@@ -91,6 +136,8 @@ unsafe fn read_volatile_u32(addr: usize) -> u32 {
     match addr {
         REG_ATOMIC_O2_SENSOR => SIM_O2.load(Ordering::Acquire),
         REG_KINETIC_JOINT => SIM_KINETIC.load(Ordering::Acquire),
+        REG_ATMOSPHERIC_PRESSURE => SIM_ATM_PRESSURE_BITS.load(Ordering::Acquire),
+        REG_RADIATION_DOSIMETER => SIM_RADIATION.load(Ordering::Acquire),
         REG_UPLINK_COMMIT_LO => SIM_COMMIT_LO.load(Ordering::Acquire),
         REG_UPLINK_COMMIT_HI => SIM_COMMIT_HI.load(Ordering::Acquire),
         REG_PMU_COMMAND => SIM_PMU.load(Ordering::Acquire),
@@ -103,6 +150,8 @@ unsafe fn write_volatile_u32(addr: usize, value: u32) {
     match addr {
         REG_ATOMIC_O2_SENSOR => SIM_O2.store(value, Ordering::Release),
         REG_KINETIC_JOINT => SIM_KINETIC.store(value, Ordering::Release),
+        REG_ATMOSPHERIC_PRESSURE => SIM_ATM_PRESSURE_BITS.store(value, Ordering::Release),
+        REG_RADIATION_DOSIMETER => SIM_RADIATION.store(value, Ordering::Release),
         REG_UPLINK_COMMIT_LO => SIM_COMMIT_LO.store(value, Ordering::Release),
         REG_UPLINK_COMMIT_HI => SIM_COMMIT_HI.store(value, Ordering::Release),
         REG_PMU_COMMAND => SIM_PMU.store(value, Ordering::Release),
