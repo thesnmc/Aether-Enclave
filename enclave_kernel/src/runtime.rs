@@ -3,12 +3,17 @@
 //! Guest modules import [`HostCalls`] from the `"aether"` module. Linear memory, when
 //! present, is bounded by [`crate::memory::SANDBOX_MEMORY_SIZE`].
 
-use wasmi::{Caller, Config, Engine, Extern, Func, Instance, Linker, Memory, MemoryType, Module, Store, TypedFunc};
+use wasmi::{
+    Caller, Config, Engine, Error, Extern, Func, Instance, Linker, Memory, MemoryType, Module, Store,
+    TypedFunc,
+};
+use wasmi::errors::MemoryError;
 use wasmi_core::F32;
 
 use crate::interrupts::{self, HardwareInterrupt};
 use crate::memory::{self, MemoryFault, SandboxRegion};
 use crate::mmio;
+use crate::serial_println;
 use crate::shutdown::{self, ShutdownReport};
 use crate::wasm_payload;
 
@@ -70,39 +75,37 @@ impl HostCalls {
     }
 }
 
+/// Emit a wasmi failure on COM1 before annihilation.
+fn log_wasm_trap(phase: &str, e: &Error) {
+    serial_println!("[AETHER] WASM phase: {}", phase);
+    serial_println!("[AETHER] WASM TRAP: {:?}", e);
+}
+
 /// Register the full `aether` host API on the linker.
 fn link_aether_host(
     linker: &mut Linker<HostState>,
     store: &mut Store<HostState>,
-) -> Result<(), HostError> {
-    linker
-        .define(
-            HOST_IMPORT_MODULE,
-            "read_atmospheric_pressure",
-            Func::wrap(&mut *store, HostCalls::read_atmospheric_pressure),
-        )
-        .map_err(|_| HostError::Linker)?;
-    linker
-        .define(
-            HOST_IMPORT_MODULE,
-            "read_radiation_dosimeter",
-            Func::wrap(&mut *store, HostCalls::read_radiation_dosimeter),
-        )
-        .map_err(|_| HostError::Linker)?;
-    linker
-        .define(
-            HOST_IMPORT_MODULE,
-            "commit_telemetry_vector",
-            Func::wrap(&mut *store, HostCalls::commit_telemetry_vector),
-        )
-        .map_err(|_| HostError::Linker)?;
-    linker
-        .define(
-            HOST_IMPORT_MODULE,
-            "commit_uplink",
-            Func::wrap(&mut *store, HostCalls::commit_uplink),
-        )
-        .map_err(|_| HostError::Linker)?;
+) -> Result<(), Error> {
+    linker.define(
+        HOST_IMPORT_MODULE,
+        "read_atmospheric_pressure",
+        Func::wrap(&mut *store, HostCalls::read_atmospheric_pressure),
+    )?;
+    linker.define(
+        HOST_IMPORT_MODULE,
+        "read_radiation_dosimeter",
+        Func::wrap(&mut *store, HostCalls::read_radiation_dosimeter),
+    )?;
+    linker.define(
+        HOST_IMPORT_MODULE,
+        "commit_telemetry_vector",
+        Func::wrap(&mut *store, HostCalls::commit_telemetry_vector),
+    )?;
+    linker.define(
+        HOST_IMPORT_MODULE,
+        "commit_uplink",
+        Func::wrap(&mut *store, HostCalls::commit_uplink),
+    )?;
     Ok(())
 }
 
@@ -112,16 +115,18 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
 
     let mut host = match AetherHost::instantiate(trigger) {
         Ok(h) => h,
-        Err(_) => {
-            fault_shutdown(trigger);
+        Err(e) => {
+            log_wasm_trap("instantiate", &e);
+            fault_shutdown(trigger, -1);
             return;
         }
     };
 
     let guest_result = match host.run_diagnostic() {
         Ok(v) => v,
-        Err(_) => {
-            fault_shutdown(trigger);
+        Err(e) => {
+            log_wasm_trap("diagnostic", &e);
+            fault_shutdown(trigger, -1);
             return;
         }
     };
@@ -135,9 +140,9 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
     });
 }
 
-fn fault_shutdown(trigger: Option<HardwareInterrupt>) {
+fn fault_shutdown(trigger: Option<HardwareInterrupt>, guest_result: i32) {
     shutdown::self_annihilate(ShutdownReport {
-        guest_result: 0,
+        guest_result,
         proof: 0,
         vector: trigger.map(|t| t as u8).unwrap_or(0),
     });
@@ -181,7 +186,7 @@ pub struct AetherHost {
 
 impl AetherHost {
     /// Parse module, wire host imports, optionally cap guest memory.
-    pub fn instantiate(trigger: Option<HardwareInterrupt>) -> Result<Self, HostError> {
+    pub fn instantiate(trigger: Option<HardwareInterrupt>) -> Result<Self, Error> {
         let mut config = Config::default();
         config.consume_fuel(false);
         let engine = Engine::new(&config);
@@ -197,34 +202,28 @@ impl AetherHost {
             },
         );
 
-        let module = Module::new(&engine, wasm_payload::WASM_BYTES).map_err(|_| HostError::ModuleParse)?;
+        let module = Module::new(&engine, wasm_payload::WASM_BYTES)?;
 
         let mut linker = Linker::new(&engine);
         link_aether_host(&mut linker, &mut store)?;
 
-        let instance_pre = linker
-            .instantiate(&mut store, &module)
-            .map_err(|_| HostError::Instantiate)?;
-        let instance = instance_pre
-            .ensure_no_start(&mut store)
-            .map_err(|_| HostError::Instantiate)?;
+        let instance_pre = linker.instantiate(&mut store, &module)?;
+        let instance = instance_pre.ensure_no_start(&mut store)?;
 
-        cap_guest_memory(&mut store, &instance)?;
+        if let Err(e) = cap_guest_memory(&mut store, &instance) {
+            return Err(e);
+        }
 
         let diagnostic = instance
             .get_typed_func::<(), i32>(&store, "diagnostic")
-            .or_else(|_| instance.get_typed_func::<(), i32>(&store, "evaluate_limits"))
-            .map_err(|_| HostError::ExportMissing)?;
+            .or_else(|_| instance.get_typed_func::<(), i32>(&store, "evaluate_limits"))?;
 
         Ok(Self { store, diagnostic })
     }
 
     /// Call exported guest entry (`diagnostic` or `evaluate_limits`).
-    pub fn run_diagnostic(&mut self) -> Result<i32, HostError> {
-        let result = self
-            .diagnostic
-            .call(&mut self.store, ())
-            .map_err(|_| HostError::Trap)?;
+    pub fn run_diagnostic(&mut self) -> Result<i32, Error> {
+        let result = self.diagnostic.call(&mut self.store, ())?;
         self.store.data_mut().guest_result = result;
         Ok(result)
     }
@@ -240,7 +239,7 @@ impl AetherHost {
     }
 }
 
-fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result<(), HostError> {
+fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result<(), Error> {
     if let Some(mem) = instance
         .get_export(&mut *store, "memory")
         .and_then(Extern::into_memory)
@@ -248,7 +247,8 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
         let sandbox = SandboxRegion::get();
         let len = mem.data(&mut *store).len();
         if len > sandbox.len() {
-            return Err(HostError::SandboxBounds);
+            serial_println!("[AETHER] WASM TRAP (memory): guest linear memory exceeds sandbox");
+            return Err(Error::from(MemoryError::OutOfBoundsAccess));
         }
         let dest = mem.data_mut(&mut *store);
         // SAFETY: Length checked `<= SANDBOX_MEMORY_SIZE`; disjoint from ISR stack.
@@ -256,32 +256,11 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
             core::ptr::copy_nonoverlapping(sandbox.base_mut_ptr(), dest.as_mut_ptr(), dest.len());
         }
     } else {
-        let _ = Memory::new(
+        Memory::new(
             store,
-            MemoryType::new(1, Some(1)).map_err(|_| HostError::MemoryType)?,
+            MemoryType::new(1, Some(1)).map_err(|_| Error::from(MemoryError::InvalidMemoryType))?,
         )
-        .map_err(|_| HostError::MemoryAllocation)?;
+        .map_err(|_| Error::from(MemoryError::OutOfBoundsAllocation))?;
     }
     Ok(())
-}
-
-/// Host error taxonomy.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum HostError {
-    /// Invalid WASM memory type configuration.
-    MemoryType,
-    /// Host arena could not satisfy WASM memory allocation.
-    MemoryAllocation,
-    /// Embedded WASM bytes failed validation.
-    ModuleParse,
-    /// Host import wiring failed.
-    Linker,
-    /// Module instantiation failed.
-    Instantiate,
-    /// Required guest export not found.
-    ExportMissing,
-    /// Trap during guest execution.
-    Trap,
-    /// Guest linear memory exceeds sandbox cap.
-    SandboxBounds,
 }

@@ -14,6 +14,7 @@ fn main() {
     let out_path = manifest_dir.join("src").join("wasm_payload.rs");
 
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=../aerospace_payload/src");
     println!("cargo:rerun-if-changed={}", payload_dir.join("Cargo.toml").display());
     println!("cargo:rerun-if-changed={}", payload_dir.join("src").display());
 
