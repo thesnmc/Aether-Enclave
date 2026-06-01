@@ -1,5 +1,6 @@
-# Bare-metal x86_64 target (bootloader + kernel). Override for Cortex-M:
-#   cargo build --target thumbv7em-none-eabihf
+# Workspace-level config for default-member `enclave_kernel` builds from the repo root.
+# A copy also lives in `enclave_kernel/.cargo/config.toml`.
+
 [build]
 target = "x86_64-unknown-none"
 
@@ -8,11 +9,5 @@ build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
 [target.x86_64-unknown-none]
-runner = "qemu-system-x86_64 -serial stdio -display none -kernel"
-rustflags = [
-    "-C", "relocation-model=static",
-]
-
-[package.metadata.bootloader]
-# Linker layout provided by the bootloader crate (replaces legacy link.x).
-target = "x86_64-unknown-none"
+runner = "bootimage runner"
+rustflags = ["-C", "relocation-model=static"]

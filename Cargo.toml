@@ -1,35 +1,7 @@
-[package]
-name = "aether_enclave"
-version = "0.1.0"
-edition = "2021"
-authors = ["AETHER-ENCLAVE Program"]
-description = "Atmospheric-State Execution Module — radiation-resilient no_std unikernel WASM host"
-license = "MIT OR Apache-2.0"
-build = "build.rs"
-
-[build-dependencies]
-wat = "1.2"
-
-[lib]
-name = "aether_enclave"
-path = "src/lib.rs"
-
-[[bin]]
-name = "aether_enclave"
-path = "src/main.rs"
-test = false
-bench = false
-
-[dependencies]
-# BIOS/UEFI boot protocol, stack setup, and BootInfo for QEMU / flight bring-up
-bootloader = { version = "0.9", features = ["map_physical_memory"] }
-# Embedded WASM interpreter (no default std; uses core + alloc from our static pool)
-wasmi = { version = "0.31", default-features = false }
-spin = { version = "0.9", default-features = false, features = ["once", "mutex"] }
-bitflags = { version = "2.6", default-features = false }
-
-[target.'cfg(target_arch = "x86_64")'.dependencies]
-x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
+[workspace]
+resolver = "2"
+members = ["enclave_kernel", "aerospace_payload"]
+default-members = ["enclave_kernel"]
 
 [profile.dev]
 panic = "abort"
@@ -42,13 +14,3 @@ opt-level = "z"
 
 [profile.release.package."*"]
 opt-level = "z"
-
-[package.metadata.bootimage]
-# This tells bootimage to use your absolute QEMU path and mount the generated disk
-run-command = [
-    "C:\\Program Files\\qemu\\qemu-system-x86_64.exe",
-    "-serial", "stdio",
-    "-display", "none",
-    "-device", "isa-debug-exit,iobase=0xf4,iosize=4",
-    "-drive", "format=raw,file={}",
-]

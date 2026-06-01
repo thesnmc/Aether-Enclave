@@ -1,0 +1,11 @@
+[package]
+name = "aerospace_payload"
+version = "0.1.0"
+edition = "2021"
+description = "AETHER-ENCLAVE sovereign WebAssembly diagnostic payload"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "aerospace_payload"
+path = "src/lib.rs"
+crate-type = ["cdylib"]
