@@ -56,45 +56,8 @@ extern "C" {
 /// Evaluate pressure + radiation limits, commit telemetry, return combined status flags as `i32`.
 #[no_mangle]
 pub extern "C" fn evaluate_limits() -> i32 {
-    let pressure = unsafe { read_atmospheric_pressure() };
-    let dose = unsafe { read_radiation_dosimeter() } as u32;
-
-    let mut status: i32 = STATUS_OK;
-    if pressure < PRESSURE_LIMIT_ATM {
-        status |= STATUS_PRESSURE_LOW;
-    }
-    if dose > DOSE_LIMIT {
-        status |= STATUS_DOSE_HIGH;
-    }
-
-    static mut TELEMETRY: TelemetryRecord = TelemetryRecord {
-        flags: 0,
-        _pad: [0, 0, 0],
-        pressure_bits: 0,
-        dose: 0,
-    };
-
-    unsafe {
-        *core::ptr::addr_of_mut!(TELEMETRY) = TelemetryRecord {
-            flags: status as u8,
-            _pad: [0, 0, 0],
-            pressure_bits: pressure.to_bits(),
-            dose,
-        };
-        let ptr = core::ptr::addr_of!(TELEMETRY) as i32;
-        let len = core::mem::size_of::<TelemetryRecord>() as i32;
-        commit_telemetry_vector(ptr, len);
-    }
-
-    let digest = status
-        .wrapping_add(pressure.to_bits() as i32)
-        .wrapping_add(dose as i32);
-    unsafe {
-        commit_uplink(digest, dose as i32);
-    }
-
-    // Explicit positive bitflags for the kernel shutdown report (3 = both limits).
-    status
+    // TEMP(isolation): bypass sensors/host syscalls — expect `guest=99` in shutdown report.
+    99
 }
 
 /// Exported alias — same symbol the host resolves first when both are present.

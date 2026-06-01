@@ -29,11 +29,9 @@ fn main() {
             "aerospace_payload",
         ])
         .status()
-        .expect("failed to spawn `cargo` for aerospace_payload");
+        .expect("Failed to execute WASM build");
 
-    if !status.success() {
-        panic!("aerospace_payload build failed with status {status}");
-    }
+    assert!(status.success(), "WASM Payload failed to compile!");
 
     let target_dir = env::var("CARGO_TARGET_DIR")
         .map(PathBuf::from)

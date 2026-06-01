@@ -5,6 +5,7 @@ edition = "2021"
 description = "AETHER-ENCLAVE sovereign WebAssembly diagnostic payload"
 license = "MIT OR Apache-2.0"
 
+# cdylib: required so `#[no_mangle]` exports survive linking (not stripped like rlib-only builds).
 [lib]
 name = "aerospace_payload"
 path = "src/lib.rs"

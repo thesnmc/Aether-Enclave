@@ -75,10 +75,11 @@ impl HostCalls {
     }
 }
 
-/// Emit a wasmi failure on COM1 before annihilation.
-fn log_wasm_trap(phase: &str, e: &Error) {
-    serial_println!("[AETHER] WASM phase: {}", phase);
-    serial_println!("[AETHER] WASM TRAP: {:?}", e);
+/// Emit a wasmi failure on COM1 before annihilation (no `Error` formatting — avoids alloc panic).
+fn log_wasm_trap() {
+    serial_println!(
+        "[AETHER] WASM TRAP TRIGGERED (Skipping formatting to prevent alloc panic)"
+    );
 }
 
 /// Register the full `aether` host API on the linker.
@@ -111,26 +112,40 @@ fn link_aether_host(
 
 /// ISR / bootstrap entry — full micro-cycle without scheduler involvement.
 pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
+    serial_println!("[AETHER] TRACER: sovereign_bootstrap entered");
     memory::reset_arena();
 
+    serial_println!("[AETHER] TRACER: Init...");
     let mut host = match AetherHost::instantiate(trigger) {
-        Ok(h) => h,
+        Ok(h) => {
+            serial_println!("[AETHER] TRACER: instantiate OK");
+            h
+        }
         Err(e) => {
-            log_wasm_trap("instantiate", &e);
+            serial_println!("[AETHER] TRACER: instantiate ERR");
+            let _ = e;
+            log_wasm_trap();
             fault_shutdown(trigger, -1);
             return;
         }
     };
 
+    serial_println!("[AETHER] TRACER: Running diagnostic...");
     let guest_result = match host.run_diagnostic() {
-        Ok(v) => v,
+        Ok(v) => {
+            serial_println!("[AETHER] TRACER: diagnostic OK");
+            v
+        }
         Err(e) => {
-            log_wasm_trap("diagnostic", &e);
+            serial_println!("[AETHER] TRACER: diagnostic ERR");
+            let _ = e;
+            log_wasm_trap();
             fault_shutdown(trigger, -1);
             return;
         }
     };
 
+    serial_println!("[AETHER] TRACER: commit_outcome");
     let proof = host.commit_outcome(guest_result);
 
     shutdown::self_annihilate(ShutdownReport {
@@ -141,6 +156,7 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
 }
 
 fn fault_shutdown(trigger: Option<HardwareInterrupt>, guest_result: i32) {
+    serial_println!("[AETHER] FATAL: Entering fault_shutdown handler");
     shutdown::self_annihilate(ShutdownReport {
         guest_result,
         proof: 0,
@@ -187,10 +203,12 @@ pub struct AetherHost {
 impl AetherHost {
     /// Parse module, wire host imports, optionally cap guest memory.
     pub fn instantiate(trigger: Option<HardwareInterrupt>) -> Result<Self, Error> {
+        serial_println!("[AETHER] TRACER: AetherHost::instantiate — engine");
         let mut config = Config::default();
         config.consume_fuel(false);
         let engine = Engine::new(&config);
 
+        serial_println!("[AETHER] TRACER: AetherHost::instantiate — store");
         let mut store = Store::new(
             &engine,
             HostState {
@@ -202,24 +220,40 @@ impl AetherHost {
             },
         );
 
-        let module = Module::new(&engine, wasm_payload::WASM_BYTES)?;
+        let module = match Module::new(&engine, wasm_payload::WASM_BYTES) {
+            Ok(m) => {
+                serial_println!("[AETHER] TRACER: Module Loaded...");
+                m
+            }
+            Err(e) => {
+                serial_println!("[AETHER] TRACER: Module::new ERR");
+                return Err(e);
+            }
+        };
 
+        serial_println!("[AETHER] TRACER: link_aether_host");
         let mut linker = Linker::new(&engine);
         link_aether_host(&mut linker, &mut store)?;
 
+        serial_println!("[AETHER] TRACER: linker.instantiate");
         let instance_pre = linker.instantiate(&mut store, &module)?;
+        serial_println!("[AETHER] TRACER: ensure_no_start");
         let instance = instance_pre.ensure_no_start(&mut store)?;
 
+        serial_println!("[AETHER] TRACER: cap_guest_memory");
         if let Err(e) = cap_guest_memory(&mut store, &instance) {
+            serial_println!("[AETHER] TRACER: cap_guest_memory ERR");
             return Err(e);
         }
 
+        serial_println!("[AETHER] TRACER: resolve guest entry");
         // Primary guest entry is `evaluate_limits` (`#[no_mangle]` in aerospace_payload);
         // `diagnostic` is a thin alias that forwards to the same logic.
         let entry = instance
             .get_typed_func::<(), i32>(&store, "evaluate_limits")
             .or_else(|_| instance.get_typed_func::<(), i32>(&store, "diagnostic"))?;
 
+        serial_println!("[AETHER] TRACER: AetherHost ready");
         Ok(Self {
             store,
             diagnostic: entry,
@@ -228,6 +262,7 @@ impl AetherHost {
 
     /// Call exported `evaluate_limits` / `diagnostic` (must return `i32` status flags).
     pub fn run_diagnostic(&mut self) -> Result<i32, Error> {
+        serial_println!("[AETHER] TRACER: diagnostic.call");
         let result = self.diagnostic.call(&mut self.store, ())?;
         self.store.data_mut().guest_result = result;
         Ok(result)
