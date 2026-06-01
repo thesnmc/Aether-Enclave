@@ -214,14 +214,19 @@ impl AetherHost {
             return Err(e);
         }
 
-        let diagnostic = instance
-            .get_typed_func::<(), i32>(&store, "diagnostic")
-            .or_else(|_| instance.get_typed_func::<(), i32>(&store, "evaluate_limits"))?;
+        // Primary guest entry is `evaluate_limits` (`#[no_mangle]` in aerospace_payload);
+        // `diagnostic` is a thin alias that forwards to the same logic.
+        let entry = instance
+            .get_typed_func::<(), i32>(&store, "evaluate_limits")
+            .or_else(|_| instance.get_typed_func::<(), i32>(&store, "diagnostic"))?;
 
-        Ok(Self { store, diagnostic })
+        Ok(Self {
+            store,
+            diagnostic: entry,
+        })
     }
 
-    /// Call exported guest entry (`diagnostic` or `evaluate_limits`).
+    /// Call exported `evaluate_limits` / `diagnostic` (must return `i32` status flags).
     pub fn run_diagnostic(&mut self) -> Result<i32, Error> {
         let result = self.diagnostic.call(&mut self.store, ())?;
         self.store.data_mut().guest_result = result;
@@ -250,11 +255,9 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
             serial_println!("[AETHER] WASM TRAP (memory): guest linear memory exceeds sandbox");
             return Err(Error::from(MemoryError::OutOfBoundsAccess));
         }
-        let dest = mem.data_mut(&mut *store);
-        // SAFETY: Length checked `<= SANDBOX_MEMORY_SIZE`; disjoint from ISR stack.
-        unsafe {
-            core::ptr::copy_nonoverlapping(sandbox.base_mut_ptr(), dest.as_mut_ptr(), dest.len());
-        }
+        // Do not overwrite guest linear memory here — the module loader has already
+        // initialized data/bss (including static telemetry). Zeroing caused traps and
+        // `guest=-1` via the fault path even when instantiation succeeded.
     } else {
         Memory::new(
             store,

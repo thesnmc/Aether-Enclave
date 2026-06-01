@@ -16,6 +16,15 @@ pub const PRESSURE_LIMIT_ATM: f32 = 0.15;
 /// Maximum acceptable radiation dose (simulated millirad-equivalent counts).
 pub const DOSE_LIMIT: u32 = 1_000;
 
+/// Host-visible status flags (`i32` return from [`evaluate_limits`]).
+pub const STATUS_OK: i32 = 0;
+/// Bit `0x1`: pressure below [`PRESSURE_LIMIT_ATM`].
+pub const STATUS_PRESSURE_LOW: i32 = 0x1;
+/// Bit `0x2`: dose above [`DOSE_LIMIT`].
+pub const STATUS_DOSE_HIGH: i32 = 0x2;
+/// Both limits exceeded (e.g. bench `sim_inject_o2_drop`: 0.12 atm, 1250 dose).
+pub const STATUS_BOTH: i32 = STATUS_PRESSURE_LOW | STATUS_DOSE_HIGH;
+
 /// Telemetry record committed via [`commit_telemetry_vector`].
 #[repr(C)]
 pub struct TelemetryRecord {
@@ -38,31 +47,26 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 /// Host syscall imports — signatures must mirror Wasm valtypes (`f32` = `0x7D`, `i32` = `0x7F`).
 #[link(wasm_import_module = "aether")]
 extern "C" {
-    /// `() -> f32` in the guest module type section.
     fn read_atmospheric_pressure() -> f32;
-    /// `() -> i32` in the guest module (Rust `u32` would mismatch the linker).
     fn read_radiation_dosimeter() -> i32;
-    /// `(i32, i32) -> ()` — pointer/length into guest linear memory.
     fn commit_telemetry_vector(ptr: i32, len: i32);
-    /// `(i32, i32) -> ()` — legacy uplink proof commit.
     fn commit_uplink(proof_lo: i32, proof_hi: i32);
 }
 
-/// Evaluate pressure + radiation limits, commit telemetry vector, return status flags.
+/// Evaluate pressure + radiation limits, commit telemetry, return combined status flags as `i32`.
 #[no_mangle]
 pub extern "C" fn evaluate_limits() -> i32 {
     let pressure = unsafe { read_atmospheric_pressure() };
     let dose = unsafe { read_radiation_dosimeter() } as u32;
 
-    let mut flags: u8 = 0;
+    let mut status: i32 = STATUS_OK;
     if pressure < PRESSURE_LIMIT_ATM {
-        flags |= 0x1;
+        status |= STATUS_PRESSURE_LOW;
     }
     if dose > DOSE_LIMIT {
-        flags |= 0x2;
+        status |= STATUS_DOSE_HIGH;
     }
 
-    // Static storage guarantees a stable address in wasm linear memory for the host copy.
     static mut TELEMETRY: TelemetryRecord = TelemetryRecord {
         flags: 0,
         _pad: [0, 0, 0],
@@ -72,7 +76,7 @@ pub extern "C" fn evaluate_limits() -> i32 {
 
     unsafe {
         *core::ptr::addr_of_mut!(TELEMETRY) = TelemetryRecord {
-            flags,
+            flags: status as u8,
             _pad: [0, 0, 0],
             pressure_bits: pressure.to_bits(),
             dose,
@@ -82,17 +86,18 @@ pub extern "C" fn evaluate_limits() -> i32 {
         commit_telemetry_vector(ptr, len);
     }
 
-    let digest = (flags as i32)
+    let digest = status
         .wrapping_add(pressure.to_bits() as i32)
         .wrapping_add(dose as i32);
     unsafe {
         commit_uplink(digest, dose as i32);
     }
 
-    flags as i32
+    // Explicit positive bitflags for the kernel shutdown report (3 = both limits).
+    status
 }
 
-/// Primary exported entry — delegates to [`evaluate_limits`].
+/// Exported alias — same symbol the host resolves first when both are present.
 #[no_mangle]
 pub extern "C" fn diagnostic() -> i32 {
     evaluate_limits()
