@@ -20,7 +20,9 @@ aether_enclave/
     ├── mmio.rs              # Sensor + uplink + PMU MMIO map
     ├── runtime.rs           # AetherHost + HostCalls (wasmi)
     ├── shutdown.rs          # Scrub, register clear, HLT
-    └── wasm_payload.rs      # Embedded `.wasm` diagnostic module
+    └── wasm_payload.rs      # AUTO-GENERATED from `payload.wat` by build.rs
+├── payload.wat              # Source WAT — edit and rebuild to change guest payload
+├── build.rs                 # WAT → WASM → `wasm_payload.rs` injection
 ```
 
 ### Multi-crate workspace (optional expansion)

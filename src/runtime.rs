@@ -121,7 +121,7 @@ impl AetherHost {
             },
         );
 
-        let module = Module::new(&engine, wasm_payload::DIAGNOSTIC_WASM).map_err(|_| HostError::ModuleParse)?;
+        let module = Module::new(&engine, wasm_payload::WASM_BYTES).map_err(|_| HostError::ModuleParse)?;
 
         let mut linker = Linker::new(&engine);
         linker

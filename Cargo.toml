@@ -5,6 +5,10 @@ edition = "2021"
 authors = ["AETHER-ENCLAVE Program"]
 description = "Atmospheric-State Execution Module — radiation-resilient no_std unikernel WASM host"
 license = "MIT OR Apache-2.0"
+build = "build.rs"
+
+[build-dependencies]
+wat = "1.215.0"
 
 [lib]
 name = "aether_enclave"
