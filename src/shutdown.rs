@@ -2,6 +2,7 @@
 
 use crate::memory;
 use crate::mmio;
+use crate::serial_println;
 
 /// Outcome bitfield written to MMIO status before power-down.
 #[derive(Debug, Clone, Copy, Default)]
@@ -16,7 +17,12 @@ pub struct ShutdownReport {
 
 /// Execute post-run annihilation: scrub sandbox/arena, flush registers, PMU dormancy.
 pub fn self_annihilate(report: ShutdownReport) -> ! {
-    let _ = report; // Proof already committed via MMIO prior to annihilation.
+    serial_println!(
+        "[AETHER] cycle success — guest={} proof=0x{:016X} vector=0x{:02X} — self-annihilation",
+        report.guest_result,
+        report.proof,
+        report.vector
+    );
 
     memory::annihilate_sandbox();
     memory::reset_arena();

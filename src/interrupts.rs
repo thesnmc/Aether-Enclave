@@ -5,7 +5,7 @@
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 
-use crate::runtime;
+use crate::{runtime, serial_println};
 
 /// Hardware interrupt vectors (IVT indices / IRQ offsets per platform BSP).
 #[repr(u8)]
@@ -94,6 +94,11 @@ fn dispatch_isr(vector: u8) {
     disable_nested();
     LAST_VECTOR.store(vector, Ordering::Release);
     WAKE_PENDING.store(true, Ordering::Release);
+
+    serial_println!(
+        "[AETHER] IRQ 0x{:02X} — waking from dormancy",
+        vector
+    );
 
     if BOOTSTRAP_ACTIVE.swap(true, Ordering::AcqRel) {
         // Re-entrant interrupt during bootstrap: drop to avoid stack blowout.

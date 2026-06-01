@@ -12,13 +12,16 @@
 #![no_main]
 use core::panic::PanicInfo;
 
-use aether_enclave::{interrupts, memory, runtime, shutdown};
+use aether_enclave::{interrupts, memory, mmio, runtime, shutdown, serial_println};
 
 /// Bare-metal entry — no Rust `main`, no libc `_start`.
 #[no_mangle]
 pub extern "C" fn _start() -> ! {
     memory::reset_arena();
+    mmio::serial_init();
     interrupts::init();
+
+    serial_println!("[AETHER] cold boot — COM1 ready, entering dormancy");
 
     dormancy_loop();
 }
@@ -32,9 +35,12 @@ fn dormancy_loop() -> ! {
         // If bootstrap did not consume the full cycle (spurious wake), observe latch.
         if interrupts::wake_pending() {
             interrupts::clear_wake();
-            runtime::sovereign_bootstrap(interrupts::HardwareInterrupt::from_vector(
-                interrupts::last_vector(),
-            ));
+            let vector = interrupts::last_vector();
+            serial_println!(
+                "[AETHER] spurious wake — vector 0x{:02X}, handoff to bootstrap",
+                vector
+            );
+            runtime::sovereign_bootstrap(interrupts::HardwareInterrupt::from_vector(vector));
         }
     }
 }

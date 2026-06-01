@@ -25,3 +25,26 @@ pub mod wasm_payload;
 
 /// Re-exported lifecycle entry for integration tests / alternate boot paths.
 pub use runtime::sovereign_bootstrap;
+
+/// Re-export COM1 serial helpers.
+pub use mmio::{serial_init, serial_write_fmt, SerialPort, COM1_PORT};
+
+/// Write formatted text to COM1 without a trailing newline.
+#[macro_export]
+macro_rules! serial_print {
+    ($($t:tt)*) => {
+        $crate::mmio::serial_write_fmt(format_args!($($t)*));
+    };
+}
+
+/// Write formatted text to COM1 followed by `\r\n`.
+#[macro_export]
+macro_rules! serial_println {
+    () => {
+        $crate::mmio::serial_write_fmt(format_args!("\r\n"));
+    };
+    ($($t:tt)*) => {
+        $crate::mmio::serial_write_fmt(format_args!($($t)*));
+        $crate::mmio::serial_write_fmt(format_args!("\r\n"));
+    };
+}
