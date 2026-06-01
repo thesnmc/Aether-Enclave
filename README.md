@@ -7,14 +7,14 @@ Atmospheric-State Execution Module — a `#![no_std]` bare-metal unikernel that 
 ```text
 aether_enclave/
 ├── .cargo/
-│   └── config.toml          # Default target + build-std for bare metal
-├── Cargo.toml               # Package manifest (lib + bin)
-├── link.x                   # Fixed physical memory layout (x86_64)
+│   └── config.toml          # build-std, QEMU runner, bootloader metadata
+├── Cargo.toml               # Package manifest (lib + bin + bootloader)
+├── link.x                   # Legacy (unused when bootloader provides linker layout)
 ├── rust-toolchain.toml      # rust-src + x86_64-unknown-none
 ├── README.md
 └── src/
     ├── lib.rs               # Crate root (#![no_std], module exports)
-    ├── main.rs              # `_start`, dormancy loop, panic handler
+    ├── main.rs              # `bootloader::entry_point!`, dormancy loop
     ├── interrupts.rs        # IVT / IDT, ISR → sovereign_bootstrap
     ├── memory.rs            # 64 KiB sandbox, bump arena, ISR stack
     ├── mmio.rs              # Sensor + uplink + PMU MMIO map
@@ -50,7 +50,7 @@ members = ["enclave", "payload-gen"]
 
 ```mermaid
 stateDiagram-v2
-    [*] --> Dormancy: _start / init
+    [*] --> Dormancy: kernel_main / init
     Dormancy --> ISR: IRQ 0x20 or 0x21
     ISR --> WASM: sovereign_bootstrap
     WASM --> Commit: MMIO uplink
@@ -79,6 +79,23 @@ Release (size-optimized):
 ```bash
 cargo +nightly build --release -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem
 ```
+
+## QEMU emulation
+
+Install [QEMU](https://www.qemu.org/) (`qemu-system-x86_64` on `PATH`). `.cargo/config.toml` registers a custom runner:
+
+```toml
+[target.x86_64-unknown-none]
+runner = "qemu-system-x86_64 -serial stdio -display none -kernel"
+```
+
+Build and launch under QEMU (serial log on stdout):
+
+```bash
+cargo +nightly run -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem
+```
+
+The kernel enters via `bootloader::entry_point!(kernel_main)` (stack + `BootInfo` set up by **bootloader 0.9.23**). COM1 output is wired to `-serial stdio`.
 
 ## ARM Cortex-M (flight target sketch)
 

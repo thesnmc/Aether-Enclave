@@ -1,4 +1,4 @@
-//! AETHER-ENCLAVE bare-metal binary entry (`_start`) and dormancy lifecycle.
+//! AETHER-ENCLAVE bare-metal binary — bootloader entry and dormancy lifecycle.
 //!
 //! ```text
 //! Deep Dormancy (HLT)
@@ -10,13 +10,17 @@
 
 #![no_std]
 #![no_main]
+
 use core::panic::PanicInfo;
+
+use bootloader::{entry_point, BootInfo};
 
 use aether_enclave::{interrupts, memory, mmio, runtime, shutdown, serial_println};
 
-/// Bare-metal entry — no Rust `main`, no libc `_start`.
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
+entry_point!(kernel_main);
+
+/// Kernel entry — stack and page tables initialized by the bootloader; receives [`BootInfo`].
+fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     memory::reset_arena();
     mmio::serial_init();
     interrupts::init();
@@ -32,7 +36,6 @@ fn dormancy_loop() -> ! {
         interrupts::enable();
         interrupts::halt_until_interrupt();
 
-        // If bootstrap did not consume the full cycle (spurious wake), observe latch.
         if interrupts::wake_pending() {
             interrupts::clear_wake();
             let vector = interrupts::last_vector();
@@ -53,7 +56,3 @@ fn panic(_info: &PanicInfo) -> ! {
         vector: interrupts::last_vector(),
     });
 }
-
-/// Required on some bare-metal targets when unwinding is disabled.
-#[no_mangle]
-extern "C" fn eh_personality() {}

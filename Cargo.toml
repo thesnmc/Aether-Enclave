@@ -21,6 +21,8 @@ test = false
 bench = false
 
 [dependencies]
+# BIOS/UEFI boot protocol, stack setup, and BootInfo for QEMU / flight bring-up
+bootloader = { version = "=0.9.23", features = ["map_physical_memory"] }
 # Embedded WASM interpreter (no default std; uses core + alloc from our static pool)
 wasmi = { version = "0.31", default-features = false }
 spin = { version = "0.9", default-features = false, features = ["once", "mutex"] }
