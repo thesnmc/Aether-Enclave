@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 authors = ["AETHER-ENCLAVE Program"]
 description = "Atmospheric-State Execution Module — radiation-resilient no_std unikernel WASM host"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-or-later"
 build = "build.rs"
 
 [lib]

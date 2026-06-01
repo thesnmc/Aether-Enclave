@@ -3,7 +3,7 @@ name = "aerospace_payload"
 version = "0.1.0"
 edition = "2021"
 description = "AETHER-ENCLAVE sovereign WebAssembly diagnostic payload"
-license = "MIT OR Apache-2.0"
+license = "AGPL-3.0-or-later"
 
 # cdylib: required so `#[no_mangle]` exports survive linking (not stripped like rlib-only builds).
 [lib]
