@@ -48,11 +48,12 @@ static SIM_TELEMETRY_LEN: core::sync::atomic::AtomicUsize =
     core::sync::atomic::AtomicUsize::new(0);
 static SIM_TELEMETRY: Mutex<[u8; TELEMETRY_VECTOR_CAP]> = Mutex::new([0; TELEMETRY_VECTOR_CAP]);
 
-/// Inject a simulated atmospheric trigger (test / pre-flight harness).
+/// Inject simulated bench sensor readings (test / pre-flight harness).
 pub fn sim_inject_o2_drop() {
     SIM_O2.store(0x0000_0100, Ordering::Release);
-    SIM_ATM_PRESSURE_BITS.store(f32::to_bits(0.12), Ordering::Release);
-    SIM_RADIATION.store(1_250, Ordering::Release);
+    // Safe-condition telemetry: 1.0 atm, dose 50 (within mission limits).
+    SIM_ATM_PRESSURE_BITS.store(f32::to_bits(1.0), Ordering::Release);
+    SIM_RADIATION.store(50, Ordering::Release);
 }
 
 /// Inject a simulated kinetic joint trigger.
