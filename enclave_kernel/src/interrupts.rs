@@ -1,6 +1,6 @@
 //! Hardware interrupt vector table (IVT) and minimal-jitter ISRs.
 //!
-//! ISRs mask nested interrupts (`cli` on x86), record the firing vector, and invoke
+//! ISRs mask nested interrupts, record the firing vector, and invoke
 //! [`crate::runtime::sovereign_bootstrap`] without scheduler mediation.
 
 use core::sync::atomic::{AtomicBool, AtomicU8, Ordering};
@@ -13,7 +13,7 @@ use crate::{runtime, serial_println};
 pub enum HardwareInterrupt {
     /// Atomic oxygen density below mission threshold (vector `0x20`).
     AtmosphericPressureThreshold = 0x20,
-    /// Mechanical deployment joint kinetic pulse (vector `0x21`).
+    /// Mechanical deployment joint kinetic pulse / heartbeat timer (vector `0x21`).
     KineticJointActuation = 0x21,
 }
 
@@ -54,8 +54,14 @@ pub fn clear_wake() {
 pub fn init() {
     #[cfg(target_arch = "x86_64")]
     x86_init_idt();
-    #[cfg(not(target_arch = "x86_64"))]
-    cortex_m_stub_init();
+}
+
+/// Decode ESP32-C3 RTC wake cause into a hardware vector (cold boot returns `None`).
+#[cfg(target_arch = "riscv32")]
+pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
+    crate::platform::esp32c3::detect_wake_trigger().inspect(|trigger| {
+        LAST_VECTOR.store(*trigger as u8, Ordering::Release);
+    })
 }
 
 /// Mask device interrupts (nested interrupt suppression).
@@ -83,10 +89,6 @@ pub fn halt_until_interrupt() {
     unsafe {
         core::arch::asm!("hlt", options(nomem, nostack));
     }
-    #[cfg(not(target_arch = "x86_64"))]
-    {
-        core::hint::spin_loop();
-    }
 }
 
 /// Common ISR tail — vector dispatch and sovereign handoff.
@@ -101,11 +103,9 @@ fn dispatch_isr(vector: u8) {
     );
 
     if BOOTSTRAP_ACTIVE.swap(true, Ordering::AcqRel) {
-        // Re-entrant interrupt during bootstrap: drop to avoid stack blowout.
         return;
     }
 
-    // Hand control directly to WASM bootstrap (spec: no OS scheduler).
     runtime::sovereign_bootstrap(HardwareInterrupt::from_vector(vector));
 
     BOOTSTRAP_ACTIVE.store(false, Ordering::Release);
@@ -123,9 +123,6 @@ mod x86 {
     use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
     static IDT_READY: AtomicBool = AtomicBool::new(false);
-
-    /// Platform IDT — `Once` yields a `&'static` table required by [`InterruptDescriptorTable::load`].
-    /// A [`spin::Mutex`] guard cannot satisfy that lifetime contract without leaking.
     static IDT: Once<InterruptDescriptorTable> = Once::new();
 
     pub fn init_idt() {
@@ -148,7 +145,6 @@ mod x86 {
         dispatch_isr(HardwareInterrupt::KineticJointActuation as u8);
     }
 
-    /// Software-trigger for bench tests (writes vector into latch and runs ISR path).
     pub fn software_trigger(vector: HardwareInterrupt) {
         dispatch_isr(vector as u8);
     }
@@ -159,18 +155,8 @@ fn x86_init_idt() {
     x86::init_idt();
 }
 
-/// Software IRQ injection for bench / HIL (hardware-in-the-loop) validation.
+/// Software IRQ injection for bench / HIL validation.
 #[cfg(target_arch = "x86_64")]
 pub fn software_trigger(vector: HardwareInterrupt) {
     x86::software_trigger(vector);
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-fn cortex_m_stub_init() {
-    // NVIC vector table would be installed here for Cortex-M flight targets.
-}
-
-#[cfg(not(target_arch = "x86_64"))]
-pub fn software_trigger(vector: HardwareInterrupt) {
-    dispatch_isr(vector as u8);
 }

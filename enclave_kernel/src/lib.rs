@@ -12,12 +12,15 @@ extern crate alloc;
 pub mod interrupts;
 pub mod memory;
 pub mod mmio;
+#[cfg(target_arch = "riscv32")]
+pub mod platform;
 pub mod runtime;
 pub mod shutdown;
 pub mod wasm_payload;
 
 pub use runtime::sovereign_bootstrap;
 
+#[cfg(target_arch = "x86_64")]
 pub use mmio::{serial_init, serial_write_fmt, SerialPort, COM1_PORT};
 
 #[macro_export]

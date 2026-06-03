@@ -1,0 +1,6 @@
+# Cap guest linear memory to one Wasm page (64 KiB) for ESP32-C3 sandbox policy.
+[target.wasm32-unknown-unknown]
+rustflags = [
+    "-C", "link-arg=--initial-memory=65536",
+    "-C", "link-arg=--max-memory=65536",
+]

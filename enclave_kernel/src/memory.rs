@@ -17,10 +17,10 @@ use spin::Mutex;
 pub const WASM_PAGE_SIZE: usize = 64 * 1024;
 
 /// Guest linear memory cap — must cover Rust `wasm32` static data, stack, and heap.
-pub const SANDBOX_MEMORY_SIZE: usize = 2 * 1024 * 1024;
+pub const SANDBOX_MEMORY_SIZE: usize = 64 * 1024;
 
 /// Host/runtime bump arena — global heap for `wasmi` and `alloc` (disjoint from guest sandbox).
-pub const ARENA_SIZE: usize = 4 * 1024 * 1024;
+pub const ARENA_SIZE: usize = 128 * 1024;
 
 /// Alias for the host heap size (`ARENA_SIZE`) — wasmi needs multi-MiB headroom to instantiate.
 pub const HEAP_SIZE: usize = ARENA_SIZE;
@@ -156,7 +156,9 @@ impl SandboxRegion {
 
 /// Zero the sandbox and seal it against further guest access (post-run annihilation).
 pub fn annihilate_sandbox() {
-    SANDBOX_MEMORY.lock().0.fill(0);
+    let mut sandbox = SANDBOX_MEMORY.lock();
+    secure_zero(&mut sandbox.0);
+    drop(sandbox);
     SANDBOX_SEALED.store(true, Ordering::Release);
 }
 
@@ -164,10 +166,11 @@ pub fn annihilate_sandbox() {
 pub fn reset_arena() {
     let mut arena = ARENA.lock();
     arena.cursor = 0;
-    arena.bytes.0.fill(0);
+    secure_zero(&mut arena.bytes.0);
     drop(arena);
     SANDBOX_SEALED.store(false, Ordering::Release);
-    SANDBOX_MEMORY.lock().0.fill(0);
+    let mut sandbox = SANDBOX_MEMORY.lock();
+    secure_zero(&mut sandbox.0);
 }
 
 /// Top-of-stack address for ISR entry (x86 grows down).
@@ -206,6 +209,16 @@ unsafe impl GlobalAlloc for ArenaAllocator {
 /// Global allocator registration for the `alloc` crate.
 #[global_allocator]
 static GLOBAL: ArenaAllocator = ArenaAllocator;
+
+/// Chunked zero-fill; feeds the hardware watchdog on ESP32 during long scrubs.
+fn secure_zero(bytes: &mut [u8]) {
+    const CHUNK: usize = 4096;
+    for chunk in bytes.chunks_mut(CHUNK) {
+        #[cfg(target_arch = "riscv32")]
+        crate::platform::esp32c3::feed_watchdog();
+        chunk.fill(0);
+    }
+}
 
 /// Non-null pointer helper used by runtime when wiring sandbox pages.
 pub fn sandbox_non_null() -> Option<NonNull<u8>> {

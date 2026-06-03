@@ -37,7 +37,6 @@ pub fn self_annihilate(report: ShutdownReport) -> ! {
 fn clear_architectural_state() {
     #[cfg(target_arch = "x86_64")]
     unsafe {
-        // SAFETY: No live Rust references depend on these registers across this boundary.
         core::arch::asm!(
             "xor rax, rax",
             "xor rbx, rbx",
@@ -48,11 +47,26 @@ fn clear_architectural_state() {
             options(nomem, nostack)
         );
     }
+
+    #[cfg(target_arch = "riscv32")]
+    unsafe {
+        core::arch::asm!(
+            "li x10, 0",
+            "li x11, 0",
+            "li x12, 0",
+            "li x13, 0",
+            "li x14, 0",
+            "li x15, 0",
+            options(nomem, nostack)
+        );
+    }
 }
 
 /// QEMU `isa-debug-exit` I/O port (see `.cargo/config.toml` runner `-device`).
+#[cfg(target_arch = "x86_64")]
 const QEMU_DEBUG_EXIT_PORT: u16 = 0xf4;
 /// Exit code written to `isa-debug-exit` (QEMU terminates the process).
+#[cfg(target_arch = "x86_64")]
 const QEMU_DEBUG_EXIT_SUCCESS: u32 = 0x10;
 
 fn enter_absolute_halt() -> ! {
@@ -60,7 +74,6 @@ fn enter_absolute_halt() -> ! {
     {
         use x86_64::instructions::port::Port;
 
-        // SAFETY: Port 0xf4 is the isa-debug-exit device when QEMU provides it.
         let mut debug_exit = Port::<u32>::new(QEMU_DEBUG_EXIT_PORT);
         unsafe {
             debug_exit.write(QEMU_DEBUG_EXIT_SUCCESS);
@@ -74,7 +87,13 @@ fn enter_absolute_halt() -> ! {
             );
         }
     }
-    #[cfg(not(target_arch = "x86_64"))]
+
+    #[cfg(target_arch = "riscv32")]
+    {
+        crate::platform::esp32c3::request_deep_sleep();
+    }
+
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv32")))]
     loop {
         core::hint::spin_loop();
     }

@@ -1,0 +1,8 @@
+# ESP32-C3 bare-metal target (esp-hal v1.1.1).
+# Build: cargo build --release --target riscv32imc-unknown-none-elf
+
+[build]
+target = "riscv32imc-unknown-none-elf"
+
+[target.riscv32imc-unknown-none-elf]
+runner = "espflash flash --monitor"
