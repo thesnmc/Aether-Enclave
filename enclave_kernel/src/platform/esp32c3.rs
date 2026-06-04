@@ -1,23 +1,23 @@
-//! ESP32-C3 flight hardware: UART0, I2C (BMP390 + ADS1115), WDT0, RTC deep sleep.
+//! ESP32-C6 flight hardware: UART0, I2C (BMP390 + ADS1115), WDT0, RTC deep sleep.
 
-use core::fmt;
+use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::time::Duration as CoreDuration;
 
 use esp_hal::delay::Delay;
-use esp_hal::gpio::{InputConfig, Pull, RtcPin, WakeupLevel};
-use esp_hal::i2c::master::{Config as I2cConfig, I2c, Rate};
+use esp_hal::gpio::{InputConfig, Pull, RtcPinWithResistors};
+use esp_hal::i2c::master::{Config as I2cConfig, I2c};
 use esp_hal::peripherals::{GPIO2, TIMG0};
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::rtc_cntl::sleep::{
-    RtcSleepConfig, RtcioWakeupSource, TimerWakeupSource, WakeSource,
+    Ext1WakeupSource, RtcSleepConfig, TimerWakeupSource, WakeSource, WakeupLevel,
 };
 use esp_hal::system::{self, SleepSource};
-use esp_hal::time::Duration;
+use esp_hal::time::{Duration, Rate};
 use esp_hal::timer::timg::{MwdtStage, TimerGroup, Wdt};
 use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_hal::Blocking;
 use spin::Mutex;
-use static_cell::StaticCell;
 
 use crate::interrupts::HardwareInterrupt;
 
@@ -61,13 +61,28 @@ struct PlatformState {
     i2c: I2c<'static, Blocking>,
     uart: Uart<'static, Blocking>,
     rtc: Rtc<'static>,
-    wdt: Wdt<TIMG0>,
+    wdt: Wdt<TIMG0<'static>>,
     wake_gpio: GPIO2<'static>,
     bmp_calib: Bmp390Calib,
 }
 
-static PLATFORM: StaticCell<Mutex<PlatformState>> = StaticCell::new();
+static PLATFORM: Mutex<Option<PlatformState>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
+
+/// Safely extract the platform state. 
+fn with_platform<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut PlatformState) -> R,
+{
+    if !READY.load(Ordering::Acquire) {
+        return None;
+    }
+    if let Some(state) = PLATFORM.lock().as_mut() {
+        Some(f(state))
+    } else {
+        None
+    }
+}
 
 /// Boot-time bring-up: WDT0, UART0, I2C @ 400 kHz, BMP390 + ADS1115 init, GPIO2 wake arm.
 pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
@@ -79,9 +94,7 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
 
     let i2c = I2c::new(
         peripherals.I2C0,
-        I2cConfig::default()
-            .with_frequency(Rate::from_khz(400))
-            .expect("400 kHz I2C"),
+        I2cConfig::default().with_frequency(Rate::from_khz(400)),
     )
     .expect("I2C init")
     .with_sda(peripherals.GPIO8)
@@ -89,15 +102,13 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
 
     let uart = Uart::new(
         peripherals.UART0,
-        UartConfig::default()
-            .with_baudrate(115_200)
-            .expect("115200 baud"),
+        UartConfig::default().with_baudrate(115_200),
     )
     .expect("UART init")
     .with_tx(peripherals.GPIO21)
     .with_rx(peripherals.GPIO20);
 
-    let wake_gpio = peripherals.GPIO2;
+    let mut wake_gpio = peripherals.GPIO2;
     let _ = esp_hal::gpio::Input::new(
         wake_gpio.reborrow(),
         InputConfig::default().with_pull(Pull::Down),
@@ -115,25 +126,23 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
     init_bmp390(&mut state).expect("BMP390 init");
     init_ads1115(&mut state).expect("ADS1115 init");
 
-    PLATFORM.init(Mutex::new(state));
+    *PLATFORM.lock() = Some(state);
     READY.store(true, Ordering::Release);
     feed_watchdog();
 }
 
 /// Kick WDT0 — required before guest runtime and during memory scrub loops.
 pub fn feed_watchdog() {
-    if READY.load(Ordering::Acquire) {
-        PLATFORM.lock().wdt.feed();
-    }
+    with_platform(|state| {
+        state.wdt.feed();
+    });
 }
 
 /// UART0 logging sink for [`crate::serial_println!`].
 pub fn serial_write_fmt(args: fmt::Arguments<'_>) {
-    if !READY.load(Ordering::Acquire) {
-        return;
-    }
-    let mut guard = PLATFORM.lock();
-    let _ = guard.uart.write_fmt(args);
+    with_platform(|state| {
+        let _ = state.uart.write_fmt(args);
+    });
 }
 
 /// Decode deep/light sleep wake cause into sovereign hardware vectors.
@@ -149,44 +158,51 @@ pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
 
 /// Read barometric pressure (atm) from BMP390 over the locked I2C bus.
 pub fn read_bmp390_pressure() -> f32 {
-    let mut guard = PLATFORM.lock();
-    feed_wdt_in_state(&mut guard);
-    match read_bmp390_pressure_inner(&mut guard) {
-        Ok(p) => p,
-        Err(_) => 0.0,
-    }
+    with_platform(|state| {
+        state.wdt.feed();
+        match read_bmp390_pressure_inner(state) {
+            Ok(p) => p,
+            Err(_) => 0.0,
+        }
+    })
+    .unwrap_or(0.0)
 }
 
 /// Read radiation front-end counts from ADS1115 AIN0.
 pub fn read_ads1115_dose() -> u32 {
-    let mut guard = PLATFORM.lock();
-    feed_wdt_in_state(&mut guard);
-    match read_ads1115_inner(&mut guard) {
-        Ok(v) => v,
-        Err(_) => 0,
-    }
+    with_platform(|state| {
+        state.wdt.feed();
+        match read_ads1115_inner(state) {
+            Ok(v) => v,
+            Err(_) => 0,
+        }
+    })
+    .unwrap_or(0)
 }
 
 /// Hybrid RTC deep sleep: 10 s timer heartbeat + GPIO2 active-high wake.
 pub fn request_deep_sleep() -> ! {
     feed_watchdog();
+    
+    // Extract the state completely so we can safely pass mutable pin references to the sleep config
     let mut guard = PLATFORM.lock();
-    feed_wdt_in_state(&mut guard);
+    if let Some(mut state) = guard.take() {
+        state.wdt.feed();
 
-    let delay = Delay::new();
-    let timer = TimerWakeupSource::new(Duration::from_secs(10));
-    let wakeup_pins: &mut [(&mut dyn RtcPin, WakeupLevel)] =
-        &mut [(&mut guard.wake_gpio, WakeupLevel::High)];
-    let rtcio = RtcioWakeupSource::new(wakeup_pins);
-    let config = RtcSleepConfig::deep();
-    delay.delay_millis(100);
-    guard
-        .rtc
-        .sleep(&config, &[&timer as &dyn WakeSource, &rtcio as &dyn WakeSource]);
-}
-
-fn feed_wdt_in_state(state: &mut PlatformState) {
-    state.wdt.feed();
+        let delay = Delay::new();
+        let timer = TimerWakeupSource::new(CoreDuration::from_secs(10));
+        let wakeup_pins: &mut [(&mut dyn RtcPinWithResistors, WakeupLevel)] =
+            &mut [(&mut state.wake_gpio, WakeupLevel::High)];
+            
+        let ext1_wake = Ext1WakeupSource::new(wakeup_pins);
+        let config = RtcSleepConfig::deep();
+        
+        delay.delay_millis(100);
+        state.rtc.sleep(&config, &[&timer as &dyn WakeSource, &ext1_wake as &dyn WakeSource]);
+    }
+    
+    // Fallback infinite hardware trap if sleep fails or platform isn't initialized
+    loop {}
 }
 
 fn i2c_write(state: &mut PlatformState, addr: u8, bytes: &[u8]) -> Result<(), ()> {

@@ -28,7 +28,7 @@ bootloader = { version = "0.9", features = ["map_physical_memory"] }
 x86_64 = { version = "0.15", default-features = false, features = ["instructions", "abi_x86_interrupt"] }
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
-esp-hal = { version = "1.1.1", features = ["esp32c3", "unstable"] }
+esp-hal = { version = "1.1.1", features = ["esp32c6", "unstable"] }
 static_cell = "2"
 
 [package.metadata.bootimage]

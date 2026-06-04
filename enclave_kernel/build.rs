@@ -25,6 +25,9 @@ fn main() {
     let status = Command::new(env::var("CARGO").unwrap_or_else(|_| "cargo".into()))
         .current_dir(&workspace_root)
         .env("CARGO_TARGET_DIR", &wasm_target_dir)
+        // Shield the WASM compiler from inheriting physical hardware linker flags
+        .env_remove("RUSTFLAGS")
+        .env_remove("CARGO_ENCODED_RUSTFLAGS")
         .args([
             "build",
             "--target",
@@ -62,16 +65,6 @@ fn main() {
             .unwrap_or(&out_path)
             .display()
     );
-
-    let target = env::var("TARGET").unwrap_or_default();
-    if target.starts_with("riscv32") {
-        emit_esp32_link_args();
-    }
-}
-
-fn emit_esp32_link_args() {
-    println!("cargo:rustc-link-arg=-Tlinkall.x");
-    println!("cargo:rustc-link-arg=-nostartfiles");
 }
 
 fn generate_rust(wasm: &[u8]) -> String {
