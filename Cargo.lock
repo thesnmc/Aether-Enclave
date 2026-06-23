@@ -379,6 +379,7 @@ dependencies = [
  "bootloader",
  "esp-hal",
  "esp-println",
+ "libm",
  "spin",
  "wasmi",
  "wasmi_core",

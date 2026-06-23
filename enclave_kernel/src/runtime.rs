@@ -122,10 +122,13 @@ fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
     Ok(())
 }
 
-/// ISR / bootstrap entry — full micro-cycle without scheduler involvement.
-pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
+/// Full micro-cycle: instantiate WASM, run guest, wipe memory.
+pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
     #[cfg(target_arch = "riscv32")]
-    crate::platform::esp32c6::feed_watchdog();
+    {
+        crate::platform::esp32c6::feed_watchdog();
+        crate::platform::esp32c6::status_led_on();
+    }
 
     memory::reset_arena();
 
@@ -149,15 +152,21 @@ pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
 
     let proof = host.commit_outcome(guest_result);
 
-    shutdown::self_annihilate(ShutdownReport {
+    shutdown::finish_cycle(ShutdownReport {
         guest_result,
         proof,
         vector: trigger.map(|t| t as u8).unwrap_or(interrupts::last_vector()),
     });
 }
 
+/// Full micro-cycle then platform halt (never returns).
+pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) -> ! {
+    run_mission_cycle(trigger);
+    shutdown::enter_absolute_halt();
+}
+
 fn fault_shutdown(trigger: Option<HardwareInterrupt>, guest_result: i32) {
-    serial_println!("[AETHER] FATAL: Entering fault_shutdown handler");
+    serial_println!("[AETHER] FATAL: fault shutdown");
     shutdown::self_annihilate(ShutdownReport {
         guest_result,
         proof: 0,

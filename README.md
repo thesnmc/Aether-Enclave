@@ -28,7 +28,7 @@ This project does **not** use Wi-Fi, Bluetooth, or 802.15.4 mesh. Your friend's 
 Sleep → Wake (IRQ 0x20 or 0x21) → Run WASM → Write proof → Wipe memory → Sleep
 ```
 
-1. **Sleep** — x86: `hlt` with interrupts on. ESP32-C6: RTC deep sleep (10 s timer or GPIO2 high).
+1. **Sleep** — x86: `hlt` with interrupts on. ESP32-C6: RTC deep sleep (pot sets 5–60 s timer, or GPIO2 high).
 2. **Wake** — Vector `0x20` = pressure threshold. Vector `0x21` = timer / kinetic pulse.
 3. **WASM** — `aerospace_payload` runs in [wasmi](https://github.com/wasmi-labs/wasmi); reads pressure and dose via host imports.
 4. **Proof** — Host fuses guest status + sensor samples into a 64-bit hash in `REG_UPLINK_COMMIT_LO/HI`.
@@ -72,28 +72,84 @@ cargo +esp run --release
 
 Plug the DevKit's **USB** port (the one wired to the chip's USB Serial/JTAG, not a separate UART bridge if your board has two). `espflash` flashes the firmware and opens a serial monitor. Panic messages from `esp-println` appear on the same port — no external debugger required.
 
+### Demo features (firmware)
+
+| Feature | How |
+|---------|-----|
+| **Demo mode** | Hold GPIO2 high while powering on → WASM cycles every 2 s (no sleep) |
+| **Cycle counter** | `cycle #N` in serial + JSON line; survives deep sleep via RTC RAM |
+| **Pot → dose sensitivity** | Turn pot before a cycle; higher ADC = easier to hit `DOSE_HIGH` |
+| **Pot → wake timer** | Turn pot at boot; sets deep-sleep timer between 5–60 s |
+| **Pressure-drop wake** | Blow on BMP390 or squeeze a bag; >0.015 atm drop forces vector `0x20` |
+| **Status LED** | GPIO10 → 330 Ω → LED → GND lights during WASM run |
+| **JSON telemetry** | One `{"cycle":...}` line per cycle for laptop capture |
+
 ### Expected serial output (after flash)
 
 ```text
 [AETHER] ESP32-C6 cold boot — USB Serial/JTAG ready
+[AETHER] wake cause — POWER_ON_RESET
 [AETHER] sensors — BMP390: OK (0x76)  ADS1115: OK (0x48)
-[AETHER] snapshot — pressure=0.987 atm  dose=412 counts
-[AETHER] cold boot — running WASM self-test (vector 0x20)
-[AETHER] cycle done — guest=0 proof=0x........ vector=0x20 — wiping memory
+[AETHER] === MISSION READY ===
+[AETHER] snapshot — cycle=0 pressure=0.987 atm alt=120 m temp=24.1 C dose=412 (raw 820) wake_timer=10s
+[AETHER] cold boot — WASM self-test (vector 0x20)
+[AETHER] cycle #1 — guest=0 (OK) proof=0x........ vector=0x20 (PRESSURE) proof_changed=true
+{"cycle":1,"guest":0,"flags":"OK","proof":"0x........",...}
 ```
 
-After sleep, press the GPIO2 button or wait 10 s for the next cycle.
+After sleep, press GPIO2 or wait for the pot-configured timer.
 
 ### Event demo (2 minutes)
 
-1. Flash before the event: `cargo +esp run --release`
-2. Serial monitor stays open on the USB port
-3. **Cold boot** — self-test cycle runs automatically (proof line on screen)
-4. **Button** (GPIO2 → 3.3V) — wake vector `0x20`, new cycle
-5. **Pot** on ADS1115 AIN0 — turn up dose past 1000 → guest status `2` or `3`
-6. **Wait 10 s** — timer wake vector `0x21`, cycle runs without touching anything
+1. Flash: `cargo +esp run --release`
+2. **Cold boot** — self-test cycle + proof line
+3. **Hold button at power-on** — demo mode (continuous cycles for the audience)
+4. **Pot** — turn up to trigger `DOSE_HIGH`; turn to change wake timer length
+5. **BMP390** — blow on sensor for pressure-drop wake
+6. **GPIO10 LED** — blinks during each WASM run
 
-If a sensor shows `MISSING`, check power and I2C wiring before the demo — the kernel still runs, but reads will be zero.
+If a sensor shows `MISSING`, check wiring (SDA=GPIO6, SCL=GPIO7).
+
+---
+
+## Optional add-ons (OLED / SD card)
+
+Compatible with this stack (`esp-hal` + `#![no_std]`), but **not implemented yet**. Both share the same I2C bus as your sensors.
+
+### OLED display (recommended: SSD1306 128×64 I2C)
+
+| Buy | Notes |
+|-----|-------|
+| **SSD1306 128×64 I2C module** (~$3–5) | Same wiring as BMP390: SDA/SCL/3.3V/GND on the shared bus |
+| Address | Usually `0x3C` (sometimes `0x3D`) — no conflict with BMP390 `0x76` or ADS1115 `0x48` |
+
+**Rust path:** add crate `ssd1306` + `embedded-graphics` (both work on `no_std`). Show cycle #, guest flags, and proof hash on screen after each WASM run.
+
+**Do not buy:** SPI-only OLED modules unless you want extra wires on GPIO12/13 — I2C is simpler with your current breadboard.
+
+### microSD card (SPI mode)
+
+| Buy | Notes |
+|-----|-------|
+| **microSD SPI module** (~$1–3) | 3.3 V logic level; **not** 5 V SD shields |
+| microSD card | Any small card; formatted FAT32 from a PC first |
+
+**Suggested wiring (free GPIOs on DevKitC-1):**
+
+| SD pin | ESP32-C6 GPIO |
+|--------|---------------|
+| CS | GPIO15 |
+| MOSI | GPIO5 |
+| MISO | GPIO4 |
+| SCK | GPIO3 |
+
+**Rust path:** `embedded-sdmmc` crate + `esp-hal` SPI driver. Use case: append one proof line per cycle to `PROOF.LOG` on the card (black-box audit trail). Adds code size and SPI bus setup — best as phase 2 after the event if serial logging is enough.
+
+### What not to get
+
+- **SH1106 or parallel RGB LCD** — different drivers, more pins
+- **SD card in SDIO mode** — harder on bare metal; SPI module is enough
+- **5 V I2C OLED** — get 3.3 V logic versions
 
 ---
 
@@ -132,14 +188,17 @@ QEMU injects bench sensor values and fires software IRQ `0x20`. Success exits wi
 | ESP32-C6 pin | Connect to |
 |--------------|------------|
 | 3.3V, GND | BMP390 + ADS1115 power |
-| GPIO8 | I2C SDA (both sensors) |
-| GPIO9 | I2C SCL (both sensors) |
-| GPIO2 | Button to 3.3V (wake, vector 0x20) |
-| ADS1115 AIN0 | Potentiometer wiper or sensor analog out |
+| **GPIO6** | I2C SDA (both sensors) |
+| **GPIO7** | I2C SCL (both sensors) |
+| GPIO2 | Button to 3.3V (wake + demo mode if held at boot) |
+| GPIO10 | Optional status LED → 330 Ω → LED → GND |
+| ADS1115 AIN0 | Potentiometer wiper (ends on 3.3V and GND) |
+
+GPIO8 on the DevKit is the onboard RGB LED — I2C uses GPIO6/7 to avoid a pin conflict.
 
 I2C addresses: BMP390 `0x76`, ADS1115 `0x48`.
 
-**Parts list (minimal):** ESP32-C6-DevKitC-1, BMP390 breakout, ADS1115 breakout, breadboard, jumper wires, tactile button, optional 10 kΩ pot for dose bench testing, USB-C cable.
+**Parts list:** DevKit, BMP390, ADS1115, breadboard, wires, button, 10 kΩ pot, optional LED + 330 Ω resistor, USB-C cable.
 
 ---
 
