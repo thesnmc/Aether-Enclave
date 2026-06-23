@@ -214,7 +214,7 @@ fn draw_boot_status(sensors_ok: bool) {
     let _ = clear();
     let _ = draw_str_centered(0, "AETHER ENCLAVE");
     let _ = draw_str_centered(2, if sensors_ok { "SENSORS THEEK" } else { "SENSOR FAULT" });
-    let _ = draw_str_centered(4, "iDEX OPEN DEMO");
+    let _ = draw_str_centered(4, "CUSTODY WITNESS");
     let _ = draw_str_centered(6, if sensors_ok { "READY / TAIYAR" } else { "DEGRADED MODE" });
 }
 

@@ -1,6 +1,6 @@
 # Aether Enclave — Capability Limits
 
-**Read this before demo, application interview, or evaluator handoff.**  
+**Read this before demo, customer pilot, or sales handoff.**  
 This device is a **Phase 0 witness POC** on reference hardware. It is **not** a certified NBC monitor, dosimeter, or cryptographic HSM.
 
 ---
@@ -23,7 +23,7 @@ This device is a **Phase 0 witness POC** on reference hardware. It is **not** a 
 
 | Limit | Honest statement |
 |-------|------------------|
-| **NBC certification** | Not qualified for operational NBC sign-off. Evaluator / pilot use only. |
+| **NBC / hazmat certification** | Not qualified for operational sign-off. Pilot / evaluation use only. |
 | **Guaranteed seal breach detection** | Pressure is a **proxy**. Slow leaks, temperature drift, and partial openings may not trip thresholds. |
 | **Certified dosimetry** | Breadboard **dose channel = potentiometer demo**. Phase 2 = qualified analog front-end with named sensor. |
 | **Anti-implant security** | No secure boot, no signed firmware, no HSM. A motivated attacker with physical access can reflash or swap SD. |
@@ -54,22 +54,23 @@ A passive logger without local alert is **incomplete** for field use. This proto
 
 ---
 
-## iDEX Phase 0 vs Phase 1–2 deliverables
+## Phase 0 vs product deliverables
 
-| Item | Today (Phase 0) | Grant deliverable |
-|------|-----------------|-------------------|
+| Item | Today (Phase 0) | Product (AE-CM1) |
+|------|-----------------|------------------|
 | MCU | ESP32-C6 module (reference) | Custom PCB, same firmware pinout |
-| Dosimeter | Pot demo | Qualified front-end (sensor TBD with Service input) |
+| Violation sensor | BMP390 pressure (demo) | Reed / Hall lid switch + optional pressure |
+| Dosimeter | Pot demo | Qualified front-end (sensor TBD per vertical) |
 | Enclosure | Clear demo box | Field enclosure + limitations label |
-| Radio | Software scaffold only | Validated burst when security review allows |
-| Units | 1 breadboard | 25 evaluator + 100 production |
+| Radio | Software scaffold only | Validated burst when customer policy allows |
+| Units | 1 breadboard | Pilot kits → boxed SKU |
 
 ---
 
 ## One sentence for sceptics
 
-> *We sell an honest offline pressure witness with local alert and export-verifiable logs — not certified NBC equipment until a Service lab scopes qualification with us.*
+> *We sell an honest offline custody witness with local alert and export-verifiable logs — not certified hazmat equipment until a customer lab scopes qualification with us.*
 
 ---
 
-**The SNMC** · Ship with every evaluator kit · 2026
+**The SNMC** · Ship with every pilot kit · 2026

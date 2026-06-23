@@ -1,6 +1,6 @@
-# Aether Enclave — Evaluator Test Procedure
+# Aether Enclave — Pilot Test Procedure
 
-**Product:** Sealed compartment integrity witness (NBC envelope / crate / bay mock-up).  
+**Product:** Sealed custody witness (crate / hazmat mock-up).  
 **Time:** ~30 minutes. **Pass:** all tests below + tamper chain fail demo.
 
 Hardware: WeAct ESP32-C6, BMP390L (**INT → GPIO1**), ADS1115, I2C OLED, microSD (GPIO3/4/5/15).  
@@ -60,7 +60,7 @@ Hardware: WeAct ESP32-C6, BMP390L (**INT → GPIO1**), ADS1115, I2C OLED, microS
 
 ---
 
-## Test 2 — Tamper-evident proof chain (iDEX wow)
+## Test 2 — Tamper-evident proof chain
 
 | Step | Action | Pass |
 |------|--------|------|
@@ -150,10 +150,10 @@ python tools/verify_log.py export.txt
 | Is | Is not |
 |----|--------|
 | Sealed-volume witness + audit log | CCTV replacement |
-| Reference ESP32-C6 POC | Flight-certified product |
-| Complements NBC / logistics QA | Live cloud dashboard |
+| Reference ESP32-C6 POC | Certified hazmat instrument |
+| Complements logistics QA | Live cloud dashboard |
 
-Full application: [IDEX_APPLICATION.md](IDEX_APPLICATION.md). Video script: [DEMO_VIDEO.md](DEMO_VIDEO.md).
+Pitch: [COMMERCIAL_PITCH.md](COMMERCIAL_PITCH.md). Video script: [DEMO_VIDEO.md](DEMO_VIDEO.md).
 
 ---
 
