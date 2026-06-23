@@ -40,6 +40,17 @@ pub fn trigger_label(t: Option<HardwareInterrupt>) -> &'static str {
     }
 }
 
+/// Short status labels for the 128×64 OLED (5×7 font width).
+pub fn guest_flags_oled(flags: i32) -> &'static str {
+    match flags {
+        0 => "STATUS OK",
+        1 => "PRESS LOW",
+        2 => "DOSE HIGH",
+        3 => "BOTH ALERT",
+        _ => "FAULT",
+    }
+}
+
 /// One-line JSON for laptop capture / projection.
 pub fn log_json_cycle(
     cycle: u32,

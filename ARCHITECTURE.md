@@ -23,11 +23,11 @@ Plain-language technical reference for the repo. Target hardware: **ESP32-C6-Dev
 
 ## 1. Purpose
 
-Run a fixed WebAssembly diagnostic on every wake. Keep no secrets in RAM between runs. Output a verifiable hash for logs, OLED, or (future) SD card.
+Run a fixed WebAssembly diagnostic on every wake. Keep no secrets in RAM between runs. Output a verifiable hash for serial, OLED, and optional SD log.
 
 Design constraints:
 
-- No OS, no network stack, no file system (SD card is planned).
+- No OS, no network stack, no full file system (SD uses fixed sectors, not FAT).
 - Guest logic is replaceable by rebuilding `aerospace_payload.wasm`.
 - Host enforces memory limits and sensor access.
 
@@ -45,8 +45,8 @@ Design constraints:
          └──────────┬───────────────────────┬───────────┘
                     │ I2C                   │ proof
                     ▼                       ▼
-              BMP390, ADS1115          OLED + USB log
-              (GPIO6/7)                (esp-println)
+              BMP390, ADS1115          OLED + USB log + SD (optional)
+              (GPIO6/7)                (esp-println)   (GPIO3/4/5/15)
 ```
 
 ---
@@ -56,7 +56,7 @@ Design constraints:
 | Step | Code | Action |
 |------|------|--------|
 | 1 | `esp_hal::init` | CPU, USB Serial/JTAG |
-| 2 | `esp32c6::init` | I2C, WDT, GPIO2 wake, GPIO10 LED, probe sensors + OLED |
+| 2 | `esp32c6::init` | I2C, WDT, GPIO2 wake, GPIO10 LED, probe sensors + OLED + SD |
 | 3 | `apply_pot_mission_profile` | Pot → dose scale + sleep timer (RTC RAM) |
 | 4 | `detect_demo_mode_hold` | GPIO2 held → continuous demo loop |
 | 5 | `resolve_trigger` | Wake cause or pressure drop or cold-boot self-test |
@@ -83,15 +83,14 @@ Deep sleep resets the CPU; there is no interrupt table on C6. Wake cause is read
 
 ## 5. Memory
 
-Static buffers only (ESP32-C6 ~512 KiB SRAM total):
+Static bump arena only (ESP32-C6 ~512 KiB SRAM total):
 
 | Buffer | Size | Use |
 |--------|------|-----|
-| `SANDBOX_MEMORY` | 64 KiB | Max WASM linear memory |
 | `ARENA` | 128 KiB | wasmi compile + heap |
-| `ISR_STACK` | 4 KiB | x86 ISR path |
+| Guest cap | 64 KiB | Max WASM linear memory (enforced at load) |
 
-Each cycle: `reset_arena()` then after run `annihilate_sandbox()` + `reset_arena()` again.
+Each cycle: `reset_arena()` at start, `wipe_host_memory()` after run.
 
 ---
 
@@ -104,7 +103,6 @@ Import module `"aether"`:
 | `read_atmospheric_pressure` | BMP390 (3-sample average) |
 | `read_radiation_dosimeter` | ADS1115 AIN0, scaled by pot |
 | `commit_telemetry_vector` | Copy from guest RAM (bounds checked) |
-| `commit_uplink` | Optional guest proof write |
 
 Guest export: `evaluate_limits() -> i32` flags:
 
@@ -155,7 +153,7 @@ proof_hi = rotate_left(last_dose, 9) XOR pressure_bits XOR 0xA17E_0001
 proof    = (proof_hi << 32) | proof_lo
 ```
 
-Printed on serial, shown on OLED, stored in RTC RAM for `proof_changed` compare.
+Printed on serial, shown on OLED, stored in RTC RAM for `proof_changed` compare. If SD init succeeded, one sector append per cycle (`sd_log.rs`).
 
 ---
 
@@ -165,10 +163,11 @@ Printed on serial, shown on OLED, stored in RTC RAM for `proof_changed` compare.
 
 1. Log human line + JSON line  
 2. Update OLED (`show_cycle`)  
-3. Turn off GPIO10 LED  
-4. Zero sandbox and arena  
-5. Clear selected CPU registers  
-6. `request_deep_sleep()` — timer + GPIO2 wake  
+3. Append SD sector if card present  
+4. Turn off GPIO10 LED  
+5. Zero sandbox and arena  
+6. Clear selected CPU registers  
+7. `request_deep_sleep()` — timer + GPIO2 wake  
 
 Panic path uses the same wipe then sleep.
 
@@ -180,6 +179,7 @@ Panic path uses the same wipe then sleep.
 |------|------|
 | `platform/esp32c6.rs` | I2C sensors, sleep, LED, pot profile |
 | `platform/oled.rs` | SSD1306 128×64 status screen |
+| `platform/sd_log.rs` | microSD SPI append-only proof sectors |
 | `platform/rtc_state.rs` | Cycle count, proof, timer in RTC RAM |
 | `platform/demo.rs` | Flag text, JSON line, altitude helper |
 | `runtime.rs` | wasmi host |
@@ -192,8 +192,7 @@ Panic path uses the same wipe then sleep.
 - Wake: GPIO2, pull-down, active high  
 - Status LED: GPIO10  
 - OLED: SSD1306 @ 0x3C on same I2C bus  
-
----
+- SD: SPI2 — GPIO3 MOSI, GPIO4 MISO, GPIO5 SCK, GPIO15 CS @ 400 kHz  
 
 ## 12. Build flow
 

@@ -1,7 +1,4 @@
-//! Embedded WebAssembly host (`AetherHost`) — wasmi on a static bump arena.
-//!
-//! Guest modules import [`HostCalls`] from the `"aether"` module. Linear memory, when
-//! present, is bounded by [`crate::memory::SANDBOX_MEMORY_SIZE`].
+//! wasmi host — loads embedded WASM, runs `evaluate_limits`, commits proof.
 
 use wasmi::{
     Caller, Config, Engine, Error, Extern, Instance, Linker, Memory, MemoryType, Module, Store,
@@ -11,55 +8,35 @@ use wasmi::errors::MemoryError;
 use wasmi_core::F32;
 
 use crate::interrupts::{self, HardwareInterrupt};
-use crate::memory::{self, MemoryFault, SandboxRegion, SANDBOX_MEMORY_SIZE, WASM_PAGE_SIZE};
+use crate::memory::{self, SANDBOX_MEMORY_SIZE, WASM_PAGE_SIZE};
 use crate::mmio;
 use crate::serial_println;
 use crate::shutdown::{self, ShutdownReport};
 use crate::wasm_payload;
 
-/// Host-side execution context for one wake cycle.
 pub struct HostState {
-    /// Physical trigger that launched this cycle.
-    pub trigger: Option<HardwareInterrupt>,
-    /// Last legacy sensor reading (proof chaining).
-    pub last_sensor: u32,
-    /// Last atmospheric pressure sample.
     pub last_pressure: f32,
-    /// Last dosimeter reading.
     pub last_dose: u32,
-    /// Cached guest return value.
     pub guest_result: i32,
 }
 
-/// Wasm import module namespace (must match `aerospace_payload` `wasm_import_module`).
 pub const HOST_IMPORT_MODULE: &str = "aether";
 
-/// Secure host syscall surface for the WASM guest (`import "aether" ...`).
 pub struct HostCalls;
 
 impl HostCalls {
-    /// `read_atmospheric_pressure() -> f32` (Wasm result type `f32` / `0x7D`).
     fn read_atmospheric_pressure(mut caller: Caller<'_, HostState>) -> F32 {
         let pressure = mmio::read_atmospheric_pressure();
         caller.data_mut().last_pressure = pressure;
         F32::from_bits(pressure.to_bits())
     }
 
-    /// `read_radiation_dosimeter() -> i32` (Wasm has no `u32`; uses `i32` / `0x7F`).
     fn read_radiation_dosimeter(mut caller: Caller<'_, HostState>) -> i32 {
         let dose = mmio::read_radiation_dosimeter();
         caller.data_mut().last_dose = dose;
         dose as i32
     }
 
-    /// `commit_uplink(proof_lo: i32, proof_hi: i32)` (legacy 64-bit proof commit).
-    fn commit_uplink(caller: Caller<'_, HostState>, proof_lo: i32, proof_hi: i32) {
-        if validate_guest_access(&caller).is_ok() {
-            let _ = mmio::commit_proof(proof_lo as u32, proof_hi as u32);
-        }
-    }
-
-    /// `commit_telemetry_vector(ptr: i32, len: i32)`
     fn commit_telemetry_vector(caller: Caller<'_, HostState>, ptr: i32, len: i32) {
         if len <= 0 {
             return;
@@ -75,7 +52,6 @@ impl HostCalls {
     }
 }
 
-/// Classify a wasmi failure on COM1 without formatting the error (no alloc).
 fn log_wasmi_error(e: &Error) {
     match e {
         Error::Linker(_) => {
@@ -93,7 +69,6 @@ fn log_wasmi_error(e: &Error) {
     }
 }
 
-/// Register the full `aether` host API on the linker (signatures must match guest imports).
 fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
     linker
         .func_wrap(
@@ -116,13 +91,9 @@ fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
             HostCalls::commit_telemetry_vector,
         )
         .map_err(Error::from)?;
-    linker
-        .func_wrap(HOST_IMPORT_MODULE, "commit_uplink", HostCalls::commit_uplink)
-        .map_err(Error::from)?;
     Ok(())
 }
 
-/// Full micro-cycle: instantiate WASM, run guest, wipe memory.
 pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
     #[cfg(target_arch = "riscv32")]
     {
@@ -132,7 +103,7 @@ pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
 
     memory::reset_arena();
 
-    let mut host = match AetherHost::instantiate(trigger) {
+    let mut host = match AetherHost::instantiate() {
         Ok(h) => h,
         Err(e) => {
             log_wasmi_error(&e);
@@ -141,7 +112,7 @@ pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
         }
     };
 
-    let guest_result = match host.run_diagnostic() {
+    let guest_result = match host.run_evaluate_limits() {
         Ok(v) => v,
         Err(e) => {
             log_wasmi_error(&e);
@@ -159,7 +130,6 @@ pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
     });
 }
 
-/// Full micro-cycle then platform halt (never returns).
 pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) -> ! {
     run_mission_cycle(trigger);
     shutdown::enter_absolute_halt();
@@ -174,18 +144,6 @@ fn fault_shutdown(trigger: Option<HardwareInterrupt>, guest_result: i32) {
     });
 }
 
-fn validate_guest_access(caller: &Caller<'_, HostState>) -> Result<(), MemoryFault> {
-    let sandbox = SandboxRegion::get();
-    if let Some(mem) = caller.get_export("memory").and_then(Extern::into_memory) {
-        let len = mem.data(caller).len();
-        if len > sandbox.len() {
-            return Err(MemoryFault::SandboxOverflow);
-        }
-    }
-    Ok(())
-}
-
-/// Bounds-checked view into guest linear memory for MMIO ingest syscalls.
 fn guest_memory_slice<'a>(
     caller: &'a Caller<'_, HostState>,
     ptr: i32,
@@ -204,15 +162,13 @@ fn guest_memory_slice<'a>(
     Some(&data[ptr..end])
 }
 
-/// Embedded WASM host: engine, store, instance, typed guest entry.
 pub struct AetherHost {
     store: Store<HostState>,
-    diagnostic: TypedFunc<(), i32>,
+    evaluate_limits: TypedFunc<(), i32>,
 }
 
 impl AetherHost {
-    /// Parse module, wire host imports, optionally cap guest memory.
-    pub fn instantiate(trigger: Option<HardwareInterrupt>) -> Result<Self, Error> {
+    pub fn instantiate() -> Result<Self, Error> {
         let mut config = Config::default();
         config.consume_fuel(false);
         let engine = Engine::new(&config);
@@ -220,8 +176,6 @@ impl AetherHost {
         let mut store = Store::new(
             &engine,
             HostState {
-                trigger,
-                last_sensor: 0,
                 last_pressure: 0.0,
                 last_dose: 0,
                 guest_result: 0,
@@ -242,32 +196,25 @@ impl AetherHost {
         crate::platform::esp32c6::feed_watchdog();
 
         let instance = instance_pre.ensure_no_start(&mut store)?;
-
         cap_guest_memory(&mut store, &instance)?;
 
-        // Primary guest entry is `evaluate_limits` (`#[no_mangle]` in aerospace_payload);
-        // `diagnostic` is a thin alias that forwards to the same logic.
-        let entry = instance
-            .get_typed_func::<(), i32>(&store, "evaluate_limits")
-            .or_else(|_| instance.get_typed_func::<(), i32>(&store, "diagnostic"))?;
+        let evaluate_limits = instance.get_typed_func::<(), i32>(&store, "evaluate_limits")?;
 
         Ok(Self {
             store,
-            diagnostic: entry,
+            evaluate_limits,
         })
     }
 
-    /// Call exported `evaluate_limits` / `diagnostic` (must return `i32` status flags).
-    pub fn run_diagnostic(&mut self) -> Result<i32, Error> {
-        let result = self.diagnostic.call(&mut self.store, ())?;
+    pub fn run_evaluate_limits(&mut self) -> Result<i32, Error> {
+        let result = self.evaluate_limits.call(&mut self.store, ())?;
         self.store.data_mut().guest_result = result;
         Ok(result)
     }
 
-    /// Derive proof digest and commit to uplink MMIO.
     pub fn commit_outcome(&self, guest_result: i32) -> u64 {
         let state = self.store.data();
-        let proof_lo = (guest_result as u32) ^ state.last_dose ^ state.last_sensor;
+        let proof_lo = (guest_result as u32) ^ state.last_dose;
         let proof_hi = state.last_dose.rotate_left(9)
             ^ f32::to_bits(state.last_pressure)
             ^ 0xA17E_0001;
@@ -287,7 +234,6 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
             Error::from(MemoryError::OutOfBoundsAccess)
         })?;
 
-        // Cross-check: wasmi's byte slice must match pages × 64 KiB.
         let data_len = mem.data(&mut *store).len();
         if data_len != guest_bytes {
             serial_println!(
@@ -301,15 +247,12 @@ fn cap_guest_memory(store: &mut Store<HostState>, instance: &Instance) -> Result
 
         if guest_bytes > SANDBOX_MEMORY_SIZE {
             serial_println!(
-                "[AETHER] WASM TRAP (memory): guest {} bytes exceeds sandbox {} bytes",
+                "[AETHER] WASM TRAP (memory): guest {} bytes exceeds cap {} bytes",
                 guest_bytes,
                 SANDBOX_MEMORY_SIZE
             );
             return Err(Error::from(MemoryError::OutOfBoundsAccess));
         }
-        // Do not overwrite guest linear memory here — the module loader has already
-        // initialized data/bss (including static telemetry). Zeroing caused traps and
-        // `guest=-1` via the fault path even when instantiation succeeded.
     } else {
         Memory::new(
             store,

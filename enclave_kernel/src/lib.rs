@@ -4,8 +4,6 @@
 //! writes a proof hash to MMIO, wipes memory, and returns to sleep.
 
 #![no_std]
-#![warn(missing_docs)]
-#![cfg_attr(target_arch = "x86_64", feature(abi_x86_interrupt))]
 
 extern crate alloc;
 

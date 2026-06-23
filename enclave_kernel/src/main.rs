@@ -24,8 +24,6 @@ fn kernel_main(_boot_info: &'static BootInfo) -> ! {
     mmio::sim_inject_o2_drop();
     serial_println!("[AETHER] bench: software IRQ 0x20 (pressure threshold)");
     interrupts::software_trigger(interrupts::HardwareInterrupt::AtmosphericPressureThreshold);
-
-    dormancy_loop();
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -49,15 +47,19 @@ pub extern "Rust" fn _esp_println_timestamp() -> u64 {
 #[cfg(target_arch = "riscv32")]
 fn log_sensor_health(health: enclave_kernel::platform::esp32c6::SensorHealth) {
     serial_println!(
-        "[AETHER] sensors — BMP390: {} (0x{:02X})  ADS1115: {} (0x{:02X})  OLED: {}",
+        "[AETHER] sensors — BMP390: {} (0x{:02X})  ADS1115: {} (0x{:02X})  OLED: {}  SD: {}",
         if health.bmp390 { "OK" } else { "MISSING" },
         health.bmp390_addr,
         if health.ads1115 { "OK" } else { "MISSING" },
         health.ads1115_addr,
         if health.oled { "OK" } else { "MISSING" },
+        if health.sd { "OK" } else { "MISSING" },
     );
     if !health.bmp390 || !health.ads1115 {
         serial_println!("[AETHER] hint: check 3.3V, GND, SDA=GPIO6, SCL=GPIO7");
+    }
+    if !health.sd {
+        serial_println!("[AETHER] hint: SD optional — MOSI=GPIO3 MISO=GPIO4 SCK=GPIO5 CS=GPIO15");
     }
 }
 
@@ -161,27 +163,6 @@ fn esp_main() -> ! {
         enclave_kernel::platform::rtc_state::wake_timer_secs()
     );
     shutdown::enter_absolute_halt();
-}
-
-fn dormancy_loop() -> ! {
-    #[cfg(target_arch = "x86_64")]
-    {
-        loop {
-            interrupts::enable();
-            interrupts::halt_until_interrupt();
-
-            if interrupts::wake_pending() {
-                interrupts::clear_wake();
-                let vector = interrupts::last_vector();
-                runtime::sovereign_bootstrap(interrupts::HardwareInterrupt::from_vector(vector));
-            }
-        }
-    }
-
-    #[cfg(target_arch = "riscv32")]
-    {
-        enclave_kernel::platform::esp32c6::request_deep_sleep();
-    }
 }
 
 #[panic_handler]

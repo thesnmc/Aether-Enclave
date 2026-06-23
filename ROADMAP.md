@@ -1,184 +1,236 @@
-# Aether Enclave — Grant Roadmap (up to ₹1.5 crore)
+# Aether Enclave — iDEX Open Roadmap (up to ₹1.5 crore)
 
-This document describes how we would spend a grant of **₹1.5 crore** (₹15 million) to move from the **DefExpo breadboard demo** to a **field-testable unit** that a lab or service branch could evaluate. Figures are planning estimates in Indian Rupees, not a formal quote.
+Spend plan for an **iDEX Open Challenge** application: move from the working breadboard prototype to a **field-ready sensor node** that Service evaluators can test on a written scope.
 
-**Current status:** Working firmware on ESP32-C6, QEMU bench, BMP390 + ADS1115 + OLED on I2C, USB flash/debug without external tools.
+**Team:** two people — founder (firmware, product, iDEX milestones) and one friend (ECE graduate, software + hardware bring-up). Grant covers **salaries and vendor work** (PCB fab, EMS); no extra hires.
 
----
-
-## Goal
-
-Deliver a **small, sleep-heavy sensor node** that:
-
-- Runs checked diagnostic logic in an isolated WASM module  
-- Leaves no application data in RAM between runs  
-- Records a proof hash per wake for audit  
-- Uses **Indian-made or Indian-assembled** hardware where practical  
-- Can be tested at a **DRDO lab, BEL, or private defence electronics partner** without rewriting the core Rust codebase  
-
----
-
-## Budget overview
-
-| Phase | Duration | Budget | Outcome |
-|-------|----------|--------|---------|
-| 0 — Done | — | ~₹0.3 L (self-funded) | Breadboard demo, Git repo, DefExpo booth |
-| 1 — Hardening | 4 months | ₹18 L | SD logging, env tests, custom PCB v1 |
-| 2 — Lab pilot | 6 months | ₹42 L | 20 pre-production units, partner lab report |
-| 3 — Qualification prep | 8 months | ₹55 L | Thermal/vibe/EMI screen, docs, CEMILAC path advice |
-| 4 — Small series | 6 months | ₹30 L | 100 units, spares, training kit |
-| 5 — Team & compliance | ongoing | ₹5 L | iDEX reporting, IP, audit trail |
-| **Total** | ~24 months | **₹1.5 Cr** | Field-evaluable product + manufacturing pack |
+**Current status:** ESP32-C6 firmware, WASM host, BMP390 + ADS1115 on I2C, SSD1306 OLED + microSD SPI module, USB flash/debug, QEMU bench.
 
 *(L = lakh = ₹100,000; Cr = crore = ₹10,000,000)*
 
 ---
 
-## Phase 0 — Complete (breadboard demo)
+## What we are building
 
-**Spend:** ~₹25,000–40,000 (already paid by founder)
+A **sleep-heavy diagnostic node** for unmanned / sheltered platforms:
 
-**Deliverables:**
+| Piece | Role |
+|-------|------|
+| ESP32-C6 (RISC-V) | Bare-metal host, deep sleep, USB debug |
+| BMP390 | Pressure (atm), altitude proxy |
+| ADS1115 + pot | Dose channel (pot = dosimeter stand-in at demo) |
+| SSD1306 OLED | Live status: cycle, flags, proof |
+| microSD (SPI) | Append-only proof log every wake |
+| WASM payload | Swappable mission logic without rewriting the Rust host |
 
-- ESP32-C6 firmware: WASM host, sensor I2C, OLED, RTC cycle counter, demo mode  
-- QEMU regression path for CI  
-- DefExpo wiring guide in README  
-
-**Not in scope yet:** SD card, sealed enclosure, radiation-hard parts, formal test reports.
-
----
-
-## Phase 1 — Hardening (₹18 lakh, months 1–4)
-
-### Engineering
-
-| Item | Cost | Notes |
-|------|------|-------|
-| 2× firmware engineers (contract, 4 mo) | ₹8 L | SD SPI driver, sealed build flags, fault injection |
-| PCB v1 (4-layer, 50 boards) | ₹4 L | ESP32-C6 + sensor sockets + OLED + SD + test pads |
-| Parts for 10 assembled boards | ₹2 L | BMP390, ADS1115, OLED, connectors |
-| Environmental chamber time (commercial lab) | ₹2 L | −10 °C to +55 °C, 10 boards |
-| Test gear (logic analyser, calibrated reference) | ₹2 L | One-time |
-
-### Milestones
-
-- [ ] microSD append-only `PROOF.LOG` per wake (SPI on GPIO3/4/5/15)  
-- [ ] PCB replaces breadboard; same firmware with pin config header  
-- [ ] 1000-cycle soak test logged  
-- [ ] Demo video + test summary for iDEX / incubator progress report  
+One USB-C cable. No Wi-Fi. No cloud. Proof on **serial + OLED + SD**.
 
 ---
 
-## Phase 2 — Lab pilot (₹42 lakh, months 5–10)
+## iDEX Open fit
 
-### Purpose
+Problem statement for the application:
 
-Put **20 units** in the hands of a **partner lab** (e.g. DRDO cluster lab, IIT defence electronics group, or DPSU R&D) for a defined test plan—not a sales pitch, a written scope.
+> *Low-power wake node that runs isolated health checks on pressure and radiation inputs, logs tamper-evident proof per cycle, and leaves no mission data in RAM between runs.*
 
-| Item | Cost | Notes |
-|------|------|-------|
-| 20 assembled PCB v2 units | ₹6 L | ESD-safe assembly, conformal coat option |
-| Lab partnership / test programme fee | ₹15 L | Written SOW: wake reliability, proof log integrity, sleep current |
-| Field sensors (real dosimeter front-end, pressure port) | ₹8 L | Replace pot with engineering-grade inputs where required |
-| 1× firmware + 1× hardware engineer (6 mo) | ₹10 L | Fix findings, PCB v2 spin |
-| Travel + DefExpo / Aero India follow-on | ₹3 L | |
+| iDEX expectation | Our answer |
+|------------------|------------|
+| Indian innovation | Rust host + RISC-V ESP32-C6, built and tested in India |
+| Defence use case | Platform bay / shelter monitor; pot → engineering front-end in Phase 2 |
+| Prototype → product | Breadboard today → PCB → 100 boxed units |
+| Lean team | Founder + ECE partner; grant pays person-months, not a hiring spree |
+| Milestone reports | Git tags, SD log samples, demo video, evaluator units |
 
-### Milestones
-
-- [ ] Signed test report: wake count, false wake rate, RAM wipe verification method  
-- [ ] WASM payload update process documented (swap `.wasm` without full reflash if feasible)  
-- [ ] Sleep current measured (< target TBD with lab, typically sub-mA domain for deep sleep)  
+We deliver **evaluator-ready hardware and documentation** in 24 months. Full platform qualification follows a named Service customer — not promised in this grant window alone.
 
 ---
 
-## Phase 3 — Qualification prep (₹55 lakh, months 11–18)
+## Team and salaries (24 months)
 
-This phase does **not** guarantee military certification—it pays for the **evidence pack** often requested before deeper qualification.
+The main cost today is **engineering time**. Hardware for the demo is **under ₹10,000**; there is **no booth rental** in the budget — DefExpo is walk-up with a breadboard and laptop.
 
-| Item | Cost | Notes |
-|------|------|-------|
-| Vibration + shock (MIL-STD-810 subset or JSS equivalent) | ₹12 L | External lab, 5 boards |
-| EMI/EMC pre-scan (conducted/radiated snapshot) | ₹15 L | Fix layout in PCB v3 if needed |
-| PCB v3 + 30 boards | ₹8 L | Guard ring, filtered power, optional metal shield can |
-| Documentation set | ₹8 L | ICD, BOM, test procedures, source release pack (AGPL compliance) |
-| Security review (external) | ₹7 L | Supply chain, flash protection, debug port policy |
-| Contingency | ₹5 L | Re-spin, failed samples |
+| Person | Role | Monthly (grant) | 24 months |
+|--------|------|---------------|-----------|
+| **Founder** | Firmware, WASM host, iDEX milestones, PCB spec, expo demo | ₹1.50 L | **₹36 L** |
+| **Friend (ECE + software)** | Bring-up, sensors, SD/OLED, test scripts, EMS liaison | ₹1.50 L | **₹36 L** |
+| **Total personnel** | | **₹3.00 L/mo** | **₹72 L** |
 
-### Milestones
-
-- [ ] Qualification readiness review with lab sign-off  
-- [ ] Written “known limitations” sheet for evaluators  
-- [ ] CEMILAC / platform office intro meetings (advice only; timelines vary by platform)  
+No other employees. PCB layout and EMS assembly are vendor line items.
 
 ---
 
-## Phase 4 — Small series (₹30 lakh, months 19–24)
+## Budget overview (₹1.5 crore)
 
-| Item | Cost | Notes |
-|------|------|-------|
-| 100 production units (PCB v3) | ₹15 L | Through EMS in India (e.g. Bangalore/Pune cluster) |
-| Enclosure (IP54-ish aluminium or ABS) | ₹6 L | Tooling + 100 shells |
-| Training kit (10 units for school/lab) | ₹4 L | Documented labs using QEMU + 1 real board |
-| Spares + warranty pool | ₹3 L | |
-| Logistics + storage | ₹2 L | |
+| Line | Budget | Notes |
+|------|--------|-------|
+| **Founder salary** (24 × ₹1.50 L/mo) | **₹36 L** | Full-time product + firmware |
+| **Friend salary** (24 × ₹1.50 L/mo) | **₹36 L** | Full-time hardware + software |
+| Phase 1 — iDEX Open + PCB v1 | ₹18 L | Fab, parts, bench tools, prototypes |
+| Phase 2 — Evaluator pilot (25 units) | ₹22 L | PCB v2, parts, travel, spares |
+| Phase 3 — Product pack | ₹16 L | Enclosure tooling, docs, PCB v3 |
+| Phase 4 — 100-unit EMS run | ₹12 L | Production batch + flash jig |
+| Travel, compliance, IP, iDEX reporting | ₹10 L | Reviews, expos, LLP, trademark |
+| **Total** | **₹150 L (₹1.5 Cr)** | |
 
-### Milestones
+**Phase 0 (done):** prototype hardware **under ₹10,000** out of pocket — no booth fees. Engineering hours not counted in that figure.
 
-- [ ] Deliver 100 serial-numbered units with calibration card  
-- [ ] Flashing jig at EMS (USB Serial/JTAG, no chip-wise manual steps)  
-- [ ] End-user one-page quick start (Hindi + English)  
+### Phase timeline
+
+| Phase | Months | Goal |
+|-------|--------|------|
+| 0 — Done | — | Working breadboard demo + repo |
+| 1 | 1–6 | iDEX Open submission, PCB v1, reliability run, SD export tool |
+| 2 | 7–14 | 25 evaluator units, PCB v2, Service feedback |
+| 3 | 15–20 | Boxed product, enclosure, Hindi/English docs |
+| 4 | 21–24 | 100 EMS units, serial numbers, training kits |
 
 ---
 
-## Phase 5 — Team & compliance (₹5 lakh, spread across project)
+## Phase 0 — Done (hardware under ₹10,000)
+
+| Part | ~₹ |
+|------|-----|
+| ESP32-C6-DevKitC-1 | 900 |
+| BMP390 breakout | 800 |
+| ADS1115 breakout | 350 |
+| SSD1306 128×64 I2C OLED | 250 |
+| microSD SPI module | 150 |
+| microSD card (dedicated log) | 200 |
+| Breadboard, wires, button, 10 kΩ pot, USB-C | 500 |
+| **Total parts** | **~₹3,150** |
+
+Headroom under ₹10k covers spares, extra wire, and a second DevKit if needed. **No booth or stall cost** — demo fits on a table with USB power and serial.
+
+**Delivered in firmware:**
+
+- [x] WASM host, wipe-between-cycles, RTC proof chain  
+- [x] OLED boot + per-cycle display  
+- [x] microSD append-only proof sectors (GPIO3/4/5/15)  
+- [x] Demo mode, pressure-drop wake, JSON serial line  
+- [x] QEMU regression path  
+
+---
+
+## Phase 1 — iDEX Open + PCB v1 (months 1–6, ₹18 L)
+
+| Item | Cost | Outcome |
+|------|------|---------|
+| iDEX Open application + legal | ₹1 L | Submitted package + company docs |
+| PCB v1 fab (50 boards, 4-layer) | ₹5 L | ESP32-C6, sensors, OLED, SD socket |
+| Parts for 15 assembled units | ₹4 L | OLED + microSD on every board |
+| Bench tools (logic analyser, DMM, reflow) | ₹4 L | Bring-up and debug capability |
+| Prototype enclosures (15) | ₹1 L | Pre-PCB mechanical check |
+| Contingency / re-spin | ₹3 L | One fab recovery |
+
+**Goals:**
+
+- [x] microSD proof sectors in firmware  
+- [ ] iDEX Open application submitted  
+- [ ] PCB v1 runs same firmware as breadboard  
+- [ ] SD export tool — proof readable on a laptop  
+- [ ] 1000-cycle reliability run with SD log  
+- [ ] Demo video for iDEX milestone  
+
+---
+
+## Phase 2 — Evaluator pilot (months 7–14, ₹22 L)
+
+Ship **25 assembled units** to **iDEX-linked Service evaluators** against a one-page test scope: wake reliability, proof log integrity, sleep current, WASM payload swap.
 
 | Item | Cost |
 |------|------|
-| Company / LLP compliance, accounting | ₹1.5 L |
-| IP filing (trademark + optional copyright on docs) | ₹2 L |
-| Grant reporting, iDEX milestone submissions | ₹1.5 L |
+| PCB v2 + 40 bare boards | ₹5 L |
+| Parts + assembly (25 units) | ₹7 L |
+| Engineering dosimeter / pressure port (5 units) | ₹3 L |
+| Travel (DefExpo, Aero India, iDEX reviews) | ₹4 L |
+| Spares + RMA | ₹3 L |
+
+**Goals:**
+
+- [ ] 25 serial-numbered units with calibration card  
+- [ ] Signed evaluator test scope  
+- [ ] Written feedback — wake count, false wakes, SD vs serial proof match  
+- [ ] PCB v2 from findings  
 
 ---
 
-## How this maps to Indian defence funding channels
+## Phase 3 — Product pack (months 15–20, ₹16 L)
 
-| Channel | Fit |
-|---------|-----|
-| **iDEX DISC / SPRINT** | Phases 1–2: prototype → lab demo |
-| **TDF (Technology Development Fund)** | Phases 2–3 if aligned with specific Service problem statement |
-| **Make-II / DPSU R&D** | Phase 4 if a DPSU adopts the module as a subsystem |
-| **State deep-tech grant** | Phase 1 overlap (PCB + hires) |
+| Item | Cost |
+|------|------|
+| PCB v3 (30 boards) | ₹5 L |
+| Enclosure tooling + 30 shells | ₹8 L |
+| Documentation (Hindi + English) | ₹2 L |
+| Supply-chain review | ₹1 L |
 
-We would **not** spend grant money on marketing fluff, generic AI, or cloud subscriptions. The spend is tied to **boards, tests, people, and written reports**.
+**Goals:**
 
----
-
-## What we will not do with the grant
-
-- Buy classic ESP32 boards (wrong CPU for this codebase)  
-- Add Wi-Fi/cloud uplink without a written security review  
-- Promise full military qualification in 24 months without a named platform customer  
-- Outsource core firmware to closed binary; Rust host stays auditable (AGPL)  
+- [ ] Boxed unit: board + OLED + SD + quick-start sheet  
+- [ ] Known-limitations sheet for evaluators  
+- [ ] AGPL source pack + BOM for audit  
+- [ ] Temperature and mechanical checks documented to agreed limits  
 
 ---
 
-## Success criteria at ₹1.5 Cr spend
+## Phase 4 — Small series (months 21–24, ₹12 L)
 
-1. **100 production units** with logged proof history (SD + serial).  
-2. **One external lab report** on reliability and wipe behaviour.  
-3. **PCB + enclosure** suitable for vehicle bay or sheltered outdoor trial—not just breadboard.  
-4. **Documented path** for a Service lab to swap WASM diagnostic logic for a new mission profile.  
-5. **DefExpo-ready demo** retained on every firmware release (regression in QEMU + 1 hardware smoke test).  
+| Item | Cost |
+|------|------|
+| 100× PCB v3 at Indian EMS | ₹8 L |
+| Enclosure + kitting (OLED, SD, card) | ₹3 L |
+| USB flash jig | ₹1 L |
 
----
+**Goals:**
 
-## Immediate next steps (before grant)
-
-1. DefExpo demo with current breadboard + OLED.  
-2. Order PCB v1 quote from two Indian fabs.  
-3. Draft 2-page problem statement for iDEX (pressure + radiation monitor wake node for unmanned systems).  
-4. Implement SD proof log (Phase 1 first code task).  
+- [ ] 100 boxed units with serial numbers  
+- [ ] Each unit ships with SD card and readout instructions  
+- [ ] DefExpo demo script passes on every release tag  
 
 ---
 
-*Figures updated June 2025 planning cycle. Adjust with actual quotes from labs and EMS vendors.*
+## Travel, compliance, IP (₹10 L)
+
+| Item | Cost |
+|------|------|
+| Travel (iDEX, DefExpo, Aero India, evaluator meetings) | ₹4 L |
+| LLP / GST / accounting | ₹1.5 L |
+| Trademark + documentation | ₹1.5 L |
+| iDEX milestone reporting | ₹1 L |
+| Contingency | ₹2 L |
+
+---
+
+## Grant spend priorities
+
+| Priority | Spend |
+|----------|-------|
+| Person-months (founder + friend) | ₹72 L |
+| PCBs, parts, EMS, enclosures | ₹68 L |
+| Travel, legal, IP, reporting | ₹10 L |
+
+We do **not** budget for: extra headcount, classic ESP32 boards, Wi-Fi/cloud uplink without a security review, or paid marketing agencies.
+
+---
+
+## Success at ₹1.5 Cr
+
+1. **100 production units** — OLED + microSD + proof log in every box.  
+2. **25+ evaluator units** with written Service feedback.  
+3. **Custom PCB + enclosure** — production shape, not breadboard.  
+4. **SD proof export** — evaluator matches laptop log to serial hash.  
+5. **Two full-time salaries** for 24 months of R&D.  
+6. **Working expo demo** on every firmware release.  
+
+---
+
+## Next steps
+
+1. DefExpo demo — breadboard with OLED + microSD (GPIO6/7 I2C, GPIO3/4/5/15 SPI).  
+2. Record demo video: wake → WASM → OLED → SD line on serial.  
+3. Draft iDEX Open problem statement (pressure + radiation wake node).  
+4. PCB v1 quotes from two Indian fabs.  
+5. SD export script for laptop proof readout.  
+
+---
+
+*iDEX Open planning draft — revise when sanction letter and EMS quotes are final.*

@@ -10,3 +10,5 @@ mod font5x7;
 pub mod oled;
 #[cfg(target_arch = "riscv32")]
 pub mod rtc_state;
+#[cfg(target_arch = "riscv32")]
+pub mod sd_log;

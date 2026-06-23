@@ -375,7 +375,6 @@ dependencies = [
 name = "enclave_kernel"
 version = "0.1.0"
 dependencies = [
- "bitflags",
  "bootloader",
  "esp-hal",
  "esp-println",

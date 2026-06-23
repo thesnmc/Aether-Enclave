@@ -147,14 +147,7 @@ pub fn show_cycle(cycle: u32, guest: i32, proof: u64, vector: u8) {
     line1[6..12].copy_from_slice(&num);
     let _ = draw_str(0, 0, core::str::from_utf8(&line1).unwrap_or("CYCLE"));
 
-    let flags = match guest {
-        0 => "STATUS OK",
-        1 => "PRESS LOW",
-        2 => "DOSE HIGH",
-        3 => "BOTH ALERT",
-        _ => "FAULT",
-    };
-    let _ = draw_str(0, 2, flags);
+    let _ = draw_str(0, 2, super::demo::guest_flags_oled(guest));
 
     let mut lo = [0u8; 8];
     format_hex8(&mut lo, proof as u32);

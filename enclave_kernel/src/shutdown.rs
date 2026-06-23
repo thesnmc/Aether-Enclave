@@ -50,6 +50,18 @@ pub fn finish_cycle(report: ShutdownReport) {
 
         rtc_state::record_cycle(report.proof, sample.pressure_atm.to_bits());
         crate::platform::oled::show_cycle(cycle, report.guest_result, report.proof, report.vector);
+        if crate::platform::sd_log::log_cycle(
+            cycle,
+            report.guest_result,
+            report.proof,
+            report.vector,
+            sample.pressure_atm,
+            sample.temp_c,
+            sample.dose_scaled,
+            proof_changed,
+        ) {
+            serial_println!("[AETHER] SD — cycle #{} logged", cycle);
+        }
         esp32c6::status_led_off();
     }
 
@@ -63,9 +75,7 @@ pub fn finish_cycle(report: ShutdownReport) {
         );
     }
 
-    memory::annihilate_sandbox();
-    memory::reset_arena();
-    clear_architectural_state();
+    memory::wipe_host_memory();
     mmio::request_dormancy();
 }
 
@@ -98,33 +108,5 @@ pub fn enter_absolute_halt() -> ! {
     #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv32")))]
     loop {
         core::hint::spin_loop();
-    }
-}
-
-fn clear_architectural_state() {
-    #[cfg(target_arch = "x86_64")]
-    unsafe {
-        core::arch::asm!(
-            "xor rax, rax",
-            "xor rbx, rbx",
-            "xor rcx, rcx",
-            "xor rdx, rdx",
-            "xor rsi, rsi",
-            "xor rdi, rdi",
-            options(nomem, nostack)
-        );
-    }
-
-    #[cfg(target_arch = "riscv32")]
-    unsafe {
-        core::arch::asm!(
-            "li x10, 0",
-            "li x11, 0",
-            "li x12, 0",
-            "li x13, 0",
-            "li x14, 0",
-            "li x15, 0",
-            options(nomem, nostack)
-        );
     }
 }

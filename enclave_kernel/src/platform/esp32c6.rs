@@ -57,6 +57,7 @@ pub struct SensorHealth {
     pub bmp390: bool,
     pub ads1115: bool,
     pub oled: bool,
+    pub sd: bool,
     pub bmp390_addr: u8,
     pub ads1115_addr: u8,
 }
@@ -197,22 +198,19 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
     if let Some(state) = PLATFORM.lock().as_mut() {
         state.health.oled = health.oled;
     }
+
+    health.sd = crate::platform::sd_log::init(
+        peripherals.SPI2,
+        peripherals.GPIO3,
+        peripherals.GPIO4,
+        peripherals.GPIO5,
+        peripherals.GPIO15,
+    );
+
     health
 }
 
 /// True when GPIO2 was held at boot — runs WASM cycles in a loop (no deep sleep).
-pub fn demo_mode_active() -> bool {
-    DEMO_MODE.load(Ordering::Acquire)
-}
-
-/// Sample pot / dose channel and configure RTC wake timer + dose sensitivity.
-pub fn apply_pot_mission_profile() {
-    let raw = read_ads1115_raw_avg();
-    rtc_state::set_wake_timer_from_pot(raw);
-    rtc_state::set_dose_sensitivity(raw);
-}
-
-/// Hold GPIO2 high at boot to enter continuous demo mode.
 pub fn detect_demo_mode_hold() -> bool {
     DEMO_MODE.load(Ordering::Acquire)
 }
@@ -232,12 +230,11 @@ fn detect_demo_hold_on_pin(gpio2: &mut GPIO2<'_>) -> bool {
     seen_high >= (DEMO_HOLD_MS / 10)
 }
 
-pub fn wake_button_high() -> bool {
-    false
-}
-
-pub fn sensor_health() -> SensorHealth {
-    with_platform(|state| state.health).unwrap_or_default()
+/// Sample pot / dose channel and configure RTC wake timer + dose sensitivity.
+pub fn apply_pot_mission_profile() {
+    let raw = read_ads1115_raw_avg();
+    rtc_state::set_wake_timer_from_pot(raw);
+    rtc_state::set_dose_sensitivity(raw);
 }
 
 pub fn feed_watchdog() {
@@ -285,10 +282,6 @@ pub fn pressure_drop_wake() -> bool {
 
 pub fn read_bmp390_pressure() -> f32 {
     read_env_sample().pressure_atm
-}
-
-pub fn read_bmp390_temp_c() -> f32 {
-    read_env_sample().temp_c
 }
 
 pub fn read_ads1115_dose() -> u32 {
