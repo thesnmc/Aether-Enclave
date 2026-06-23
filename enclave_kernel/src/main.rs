@@ -47,16 +47,17 @@ pub extern "Rust" fn _esp_println_timestamp() -> u64 {
 #[cfg(target_arch = "riscv32")]
 fn log_sensor_health(health: enclave_kernel::platform::esp32c6::SensorHealth) {
     serial_println!(
-        "[AETHER] sensors — BMP390: {} (0x{:02X})  ADS1115: {} (0x{:02X})  OLED: {}  SD: {}",
+        "[AETHER] sensors — BMP390: {} (0x{:02X}) INT:{}  ADS1115: {} (0x{:02X})  OLED: {}  SD: {}",
         if health.bmp390 { "OK" } else { "MISSING" },
         health.bmp390_addr,
+        if health.bmp390_int { "GPIO1" } else { "off" },
         if health.ads1115 { "OK" } else { "MISSING" },
         health.ads1115_addr,
         if health.oled { "OK" } else { "MISSING" },
         if health.sd { "OK" } else { "MISSING" },
     );
     if !health.bmp390 || !health.ads1115 {
-        serial_println!("[AETHER] hint: check 3.3V, GND, SDA=GPIO6, SCL=GPIO7");
+        serial_println!("[AETHER] hint: check 3.3V, GND, SDA=GPIO6, SCL=GPIO7, BMP390 INT=GPIO1");
     }
     if !health.sd {
         serial_println!("[AETHER] hint: SD optional — MOSI=GPIO3 MISO=GPIO4 SCK=GPIO5 CS=GPIO15");
@@ -66,9 +67,10 @@ fn log_sensor_health(health: enclave_kernel::platform::esp32c6::SensorHealth) {
 #[cfg(target_arch = "riscv32")]
 fn log_mission_banner(health: enclave_kernel::platform::esp32c6::SensorHealth) {
     if health.bmp390 && health.ads1115 {
-        serial_println!("[AETHER] === MISSION READY ===");
+        serial_println!("[AETHER] === SEALED COMPARTMENT WITNESS READY ===");
+        serial_println!("[AETHER] mode=EVENT_ONLY — log on pressure/dose change or button");
     } else {
-        serial_println!("[AETHER] === MISSION DEGRADED (sensor fault) ===");
+        serial_println!("[AETHER] === WITNESS DEGRADED (check sensors) ===");
     }
 }
 
@@ -95,16 +97,27 @@ fn log_mission_profile() {
 
     let p = mission_profile::current();
     serial_println!(
-        "[AETHER] mission — id={} payload={} P_lim={:.3}atm D_lim={} leak={:.4}atm/s wake={}-{}s{}",
+        "[AETHER] mission — id={} payload={} mode={} interval_wake={} radio={} P_lim={:.3}atm D_lim={}{}",
         p.mission_id,
         mission_profile::payload_name(p.payload_slot),
+        if p.interval_wake { "INTERVAL+EVENT" } else { "EVENT_ONLY" },
+        if p.interval_wake { "on" } else { "off" },
+        if p.radio_enable { "ON" } else { "OFF" },
         p.pressure_limit_atm,
         p.dose_limit,
-        p.leak_rate_atm_s,
-        p.wake_min_secs,
-        p.wake_max_secs,
-        if p.from_sd { " (SD profile)" } else { " (defaults; pot>75%=RELAXED)" },
+        if p.from_sd {
+            " (SD profile)"
+        } else {
+            " (pot<10%=interval, >75%=RELAXED, >90%=radio dry-run)"
+        },
     );
+    if p.interval_wake {
+        serial_println!(
+            "[AETHER] interval — wake every {}-{} s (pot tunes within range)",
+            p.wake_min_secs,
+            p.wake_max_secs,
+        );
+    }
 }
 
 #[cfg(target_arch = "riscv32")]
@@ -161,27 +174,56 @@ fn esp_main() -> ! {
     log_mission_profile();
     log_mission_banner(health);
     log_sensor_snapshot();
-    enclave_kernel::platform::oled::show_boot(health.bmp390 && health.ads1115);
+    enclave_kernel::platform::oled::play_boot_splash(health.bmp390 && health.ads1115);
+
+    if enclave_kernel::platform::rtc_state::breach_latched() {
+        let guest = enclave_kernel::platform::rtc_state::breach_guest();
+        enclave_kernel::platform::esp32c6::sync_breach_led();
+        serial_println!(
+            "[AETHER] BREACH latched — {} (GPIO10 ON; press GPIO2 to ACK)",
+            enclave_kernel::platform::demo::guest_flags_text(guest),
+        );
+        enclave_kernel::platform::oled::show_breach_reminder(guest);
+        if enclave_kernel::platform::esp32c6::try_acknowledge_breach() {
+            // LED off + serial printed in try_acknowledge_breach
+        }
+    }
 
     if enclave_kernel::platform::esp32c6::detect_demo_mode_hold() {
         demo_loop();
     }
 
-    let trigger = resolve_trigger();
-    if interrupts::detect_wake_trigger().is_some() {
-        serial_println!(
-            "[AETHER] wake — vector 0x{:02X}, running WASM cycle",
-            trigger as u8
-        );
-    } else {
-        serial_println!("[AETHER] cold boot — WASM self-test (vector 0x20)");
+    enclave_kernel::platform::esp32c6::establish_baseline_if_needed();
+
+    if enclave_kernel::platform::esp32c6::should_resleep_after_bmp_int() {
+        serial_println!("[AETHER] sensors stable — back to sleep (no log)");
+        enclave_kernel::platform::esp32c6::request_deep_sleep();
     }
 
-    run_one_cycle(trigger);
-    serial_println!(
-        "[AETHER] entering deep sleep (GPIO2 high or {} s timer)",
-        enclave_kernel::platform::rtc_state::wake_timer_secs()
-    );
+    if let Some(trigger) = enclave_kernel::platform::esp32c6::mission_cycle_trigger() {
+        if let Some(event) = enclave_kernel::platform::esp32c6::sensor_change_detected() {
+            serial_println!("[AETHER] event — {event}");
+        }
+        serial_println!(
+            "[AETHER] wake — vector 0x{:02X}, running WASM cycle",
+            trigger as u8,
+        );
+        run_one_cycle(trigger);
+        enclave_kernel::platform::esp32c6::run_review_browser_if_requested();
+    } else {
+        serial_println!("[AETHER] event-only — no change; sleeping without log");
+        enclave_kernel::platform::esp32c6::run_review_browser_if_requested();
+        enclave_kernel::platform::esp32c6::request_deep_sleep();
+    }
+
+    if enclave_kernel::platform::mission_profile::interval_wake_enabled() {
+        serial_println!(
+            "[AETHER] entering deep sleep (button, BMP390 INT, or {} s timer)",
+            enclave_kernel::platform::rtc_state::wake_timer_secs()
+        );
+    } else {
+        serial_println!("[AETHER] entering deep sleep (button or BMP390 INT on change)");
+    }
     shutdown::enter_absolute_halt();
 }
 

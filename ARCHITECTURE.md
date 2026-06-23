@@ -8,7 +8,11 @@ Wiring steps and parts list: [README.md](README.md).
 
 ## 1. Purpose
 
-On every wake, load a WebAssembly module, read sensors through a fixed host API, compare against limits, compute a proof hash linked to the previous cycle, log to serial/OLED/SD, zero RAM, and sleep.
+**Aether Enclave** witnesses **sealed compartment integrity** for defence logistics and NBC envelopes: on each **event** (pressure/dose change or manual wake), load WebAssembly policy, read sensors through a fixed host API, compare limits, compute a proof hash linked to the previous event, log to serial/OLED/SD, zero RAM, and sleep.
+
+**Default mode:** `EVENT_ONLY` (no periodic timer log). Optional interval wake via mission profile.
+
+**Reference hardware:** ESP32-C6 breadboard. **Product:** custom PCB (iDEX deliverable).
 
 Constraints:
 
@@ -21,7 +25,7 @@ Constraints:
 ## 2. Block diagram
 
 ```text
-  Wake (button / timer / pressure)
+  Wake (button / BMP390 INT / optional timer)
            │
            ▼
   ┌────────────────────────────────────┐

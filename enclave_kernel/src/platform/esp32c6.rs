@@ -1,7 +1,7 @@
 //! ESP32-C6 board support: I2C sensors (BMP390 + ADS1115), watchdog, RTC deep sleep.
 //!
-//! I2C on GPIO6/7 (avoids DevKitC onboard LED on GPIO8). WeAct C6-A-N4: same map.
-//! Optional status LED: GPIO10 → 330 Ω → LED → GND.
+//! I2C on GPIO6/7. BMP390 INT on GPIO1 (top-row INT pin on breakout).
+//! Button wake GPIO2 high; GPIO10 optional status LED.
 
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration as CoreDuration;
@@ -9,7 +9,7 @@ use core::time::Duration as CoreDuration;
 use esp_hal::delay::Delay;
 use esp_hal::gpio::{Input, InputConfig, Output, OutputConfig, Pull, RtcPinWithResistors, Level};
 use esp_hal::i2c::master::{Config as I2cConfig, I2c};
-use esp_hal::peripherals::{GPIO2, TIMG0};
+use esp_hal::peripherals::{GPIO1, GPIO2, TIMG0};
 use esp_hal::rtc_cntl::Rtc;
 use esp_hal::rtc_cntl::sleep::{
     Ext1WakeupSource, RtcSleepConfig, TimerWakeupSource, WakeSource, WakeupLevel,
@@ -31,20 +31,31 @@ const ADS1115_ADDR_PRIMARY: u8 = 0x48;
 const ADS1115_ADDR_SECONDARY: u8 = 0x49;
 
 const BMP390_REG_CHIP_ID: u8 = 0x00;
+const BMP390_REG_INT_STATUS: u8 = 0x11;
 const BMP390_REG_DATA: u8 = 0x04;
 const BMP390_REG_CALIB: u8 = 0x31;
-const BMP390_REG_PWR_CTRL: u8 = 0x1D;
+const BMP390_REG_INT_CTRL: u8 = 0x19;
+const BMP390_REG_PWR_CTRL: u8 = 0x1B;
+const BMP390_REG_ODR: u8 = 0x1D;
 const BMP390_REG_CMD: u8 = 0x7E;
 const BMP390_CHIP_ID: u8 = 0x60;
 const BMP390_SOFT_RESET: u8 = 0xB6;
-const BMP390_PWR_NORMAL: u8 = 0x30;
+/// Normal mode + pressure + temperature enabled.
+const BMP390_PWR_NORMAL: u8 = 0x33;
+/// ~1.5 Hz ODR while sleeping (640 ms between samples).
+const BMP390_ODR_SLEEP: u8 = 0x07;
+/// Open-drain, active-low INT + data-ready to INT pin.
+const BMP390_INT_DRDY: u8 = 0x41;
 
 const ADS1115_REG_CONVERSION: u8 = 0x00;
 const ADS1115_REG_CONFIG: u8 = 0x01;
 const ADS1115_CFG_AIN0: u16 = 0xC583;
 
-/// Pressure drop between sleeps that forces vector 0x20 (atm).
+/// Pressure delta between sleeps that counts as an event (atm).
 const PRESSURE_DROP_ATM: f32 = 0.015;
+
+/// Scaled dose delta that counts as an event.
+const DOSE_CHANGE_MIN: u32 = 80;
 
 /// Boot-time button hold for continuous demo mode (ms).
 const DEMO_HOLD_MS: u32 = 400;
@@ -59,6 +70,7 @@ pub struct SensorHealth {
     pub oled: bool,
     pub sd: bool,
     pub bmp390_addr: u8,
+    pub bmp390_int: bool,
     pub ads1115_addr: u8,
 }
 
@@ -88,11 +100,13 @@ struct Bmp390Calib {
     par_p11: i8,
 }
 
-struct PlatformState {
+pub(crate) struct PlatformState {
     i2c: I2c<'static, Blocking>,
     rtc: Rtc<'static>,
     wdt: Wdt<TIMG0<'static>>,
     wake_gpio: GPIO2<'static>,
+    bmp_int_gpio: GPIO1<'static>,
+    pub(crate) review_gpio: esp_hal::peripherals::GPIO9<'static>,
     status_led: Output<'static>,
     bmp_calib: Bmp390Calib,
     bmp_addr: u8,
@@ -122,7 +136,7 @@ where
     with_platform(|state| f(&mut state.i2c))
 }
 
-/// Boot: WDT, I2C @ GPIO6/7, sensors, GPIO2 wake, GPIO10 status LED.
+/// Boot: WDT, I2C @ GPIO6/7, sensors, GPIO2 button + GPIO1 BMP390 INT, GPIO10 LED.
 pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let mut wdt = timg0.wdt;
@@ -142,6 +156,8 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
     let demo_active = detect_demo_hold_on_pin(&mut gpio2);
     DEMO_MODE.store(demo_active, Ordering::Release);
     let wake_gpio = gpio2;
+    let bmp_int_gpio = peripherals.GPIO1;
+    let review_gpio = peripherals.GPIO9;
 
     let status_led = Output::new(
         peripherals.GPIO10,
@@ -159,6 +175,8 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
         rtc: Rtc::new(peripherals.LPWR),
         wdt,
         wake_gpio,
+        bmp_int_gpio,
+        review_gpio,
         status_led,
         bmp_calib: Bmp390Calib::default(),
         bmp_addr: 0,
@@ -170,6 +188,7 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
         if init_bmp390(&mut probe, addr).is_ok() {
             health.bmp390 = true;
             health.bmp390_addr = addr;
+            health.bmp390_int = configure_bmp390_interrupt(&mut probe).is_ok();
             bmp_addr = addr;
             bmp_calib = probe.bmp_calib;
             break;
@@ -243,6 +262,28 @@ pub fn feed_watchdog() {
     with_platform(|state| state.wdt.feed());
 }
 
+pub fn sync_breach_led() {
+    if crate::platform::rtc_state::breach_latched() {
+        status_led_on();
+    } else {
+        status_led_off();
+    }
+}
+
+/// GPIO2 pressed at wake while alert latched → operator acknowledge.
+pub fn try_acknowledge_breach() -> bool {
+    if !crate::platform::rtc_state::breach_latched() {
+        return false;
+    }
+    if !button_pressed_now() {
+        return false;
+    }
+    crate::platform::rtc_state::clear_breach();
+    status_led_off();
+    crate::serial_println!("[AETHER] BREACH ACK — GPIO2 operator clear");
+    true
+}
+
 pub fn status_led_on() {
     with_platform(|state| state.status_led.set_high());
 }
@@ -254,9 +295,27 @@ pub fn status_led_off() {
 pub fn log_wake_cause() {
     let cause = system::wakeup_cause();
     crate::serial_println!(
-        "[AETHER] wake cause — {}",
+        "[AETHER] wake cause — {} ({})",
         crate::platform::demo::wake_cause_text(cause),
+        wake_source_label(),
     );
+}
+
+/// Human-readable wake source after classifying GPIO vs timer.
+pub fn wake_source_label() -> &'static str {
+    match system::wakeup_cause() {
+        SleepSource::Timer => "RTC_TIMER",
+        SleepSource::Gpio | SleepSource::Ext0 | SleepSource::Ext1 => {
+            if button_pressed_now() {
+                "GPIO2_BUTTON"
+            } else if bmp390_interrupt_pending() {
+                "BMP390_INT"
+            } else {
+                "GPIO"
+            }
+        }
+        _ => "POWER_ON_RESET",
+    }
 }
 
 pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
@@ -267,6 +326,97 @@ pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
         }
         _ => None,
     }
+}
+
+/// BMP390 INT woke the chip but sensors are stable — skip WASM cycle.
+pub fn should_resleep_after_bmp_int() -> bool {
+    match system::wakeup_cause() {
+        SleepSource::Gpio | SleepSource::Ext0 | SleepSource::Ext1 => {}
+        _ => return false,
+    }
+    if button_pressed_now() {
+        return false;
+    }
+    if crate::platform::mission_profile::interval_wake_enabled() {
+        match system::wakeup_cause() {
+            SleepSource::Timer => return false,
+            _ => {}
+        }
+    }
+    if !bmp390_interrupt_pending() && !crate::platform::mission_profile::interval_wake_enabled() {
+        return sensor_change_detected().is_none();
+    }
+    if bmp390_interrupt_pending() {
+        clear_bmp390_interrupt();
+    }
+    sensor_change_detected().is_none()
+}
+
+/// True when pressure or dose moved enough vs last baseline/cycle.
+pub fn sensor_change_detected() -> Option<&'static str> {
+    if let Some(reason) = pressure_wake_label() {
+        return Some(reason);
+    }
+
+    let sample = read_env_sample();
+    let last_p = f32::from_bits(rtc_state::last_pressure_bits());
+    if last_p <= 0.0 || sample.pressure_atm <= 0.0 {
+        return None;
+    }
+
+    let delta_p = (last_p - sample.pressure_atm).abs();
+    if delta_p >= PRESSURE_DROP_ATM {
+        return Some(if last_p > sample.pressure_atm {
+            "pressure drop"
+        } else {
+            "pressure rise"
+        });
+    }
+
+    let last_d = rtc_state::last_dose();
+    if sample.dose_scaled.abs_diff(last_d) >= DOSE_CHANGE_MIN {
+        return Some("dose change");
+    }
+
+    None
+}
+
+/// Save first sensor reading as reference, then sleep (event-only mode).
+pub fn establish_baseline_if_needed() {
+    if rtc_state::has_sensor_baseline() {
+        return;
+    }
+    let sample = read_env_sample();
+    if sample.pressure_atm <= 0.0 {
+        return;
+    }
+    rtc_state::record_baseline(sample.pressure_atm.to_bits(), sample.dose_scaled);
+    crate::serial_println!(
+        "[AETHER] baseline — P={:.3} atm dose={} (event-only; waiting for change)",
+        sample.pressure_atm,
+        sample.dose_scaled,
+    );
+}
+
+/// Whether a full WASM log cycle should run this wake.
+pub fn mission_cycle_trigger() -> Option<HardwareInterrupt> {
+    use crate::platform::mission_profile;
+
+    if button_pressed_now() {
+        return Some(HardwareInterrupt::AtmosphericPressureThreshold);
+    }
+
+    if mission_profile::interval_wake_enabled() {
+        if matches!(system::wakeup_cause(), SleepSource::Timer) {
+            return Some(HardwareInterrupt::KineticJointActuation);
+        }
+    }
+
+    if sensor_change_detected().is_some() {
+        return Some(HardwareInterrupt::AtmosphericPressureThreshold);
+    }
+
+    None
 }
 
 /// Pressure-based wake reason (one sensor sample per check).
@@ -336,22 +486,38 @@ pub fn read_env_sample() -> EnvSample {
     }
 }
 
+pub fn run_review_browser_if_requested() {
+    with_platform(|state| super::event_browser::run_if_requested(state));
+}
+
 pub fn request_deep_sleep() -> ! {
     feed_watchdog();
-    status_led_off();
+    if !rtc_state::breach_latched() {
+        status_led_off();
+    }
 
     let mut guard = PLATFORM.lock();
     if let Some(mut state) = guard.take() {
         state.wdt.feed();
+        arm_bmp390_sleep_interrupt(&mut state);
         let delay = Delay::new();
         let secs = rtc_state::wake_timer_secs();
-        let timer = TimerWakeupSource::new(CoreDuration::from_secs(secs));
-        let wakeup_pins: &mut [(&mut dyn RtcPinWithResistors, WakeupLevel)] =
-            &mut [(&mut state.wake_gpio, WakeupLevel::High)];
+        let wakeup_pins: &mut [(&mut dyn RtcPinWithResistors, WakeupLevel)] = &mut [
+            (&mut state.wake_gpio, WakeupLevel::High),
+            (&mut state.bmp_int_gpio, WakeupLevel::Low),
+        ];
         let ext1_wake = Ext1WakeupSource::new(wakeup_pins);
         let config = RtcSleepConfig::deep();
         delay.delay_millis(100);
-        state.rtc.sleep(&config, &[&timer as &dyn WakeSource, &ext1_wake as &dyn WakeSource]);
+        if crate::platform::mission_profile::interval_wake_enabled() {
+            let timer = TimerWakeupSource::new(CoreDuration::from_secs(secs));
+            state.rtc.sleep(
+                &config,
+                &[&timer as &dyn WakeSource, &ext1_wake as &dyn WakeSource],
+            );
+        } else {
+            state.rtc.sleep(&config, &[&ext1_wake as &dyn WakeSource]);
+        }
     }
     loop {}
 }
@@ -409,12 +575,66 @@ fn init_bmp390(state: &mut PlatformState, addr: u8) -> Result<(), ()> {
     i2c_write(state, addr, &[BMP390_REG_CMD, BMP390_SOFT_RESET])?;
     Delay::new().delay_millis(100);
     i2c_write(state, addr, &[BMP390_REG_PWR_CTRL, BMP390_PWR_NORMAL])?;
+    i2c_write(state, addr, &[BMP390_REG_ODR, BMP390_ODR_SLEEP])?;
     Delay::new().delay_millis(20);
     let mut nvm = [0u8; 21];
     i2c_write_read(state, addr, &[BMP390_REG_CALIB], &mut nvm)?;
     state.bmp_calib = parse_bmp390_calib(&nvm);
     state.bmp_addr = addr;
     Ok(())
+}
+
+fn configure_bmp390_interrupt(state: &mut PlatformState) -> Result<(), ()> {
+    let addr = state.bmp_addr;
+    i2c_write(state, addr, &[BMP390_REG_INT_CTRL, BMP390_INT_DRDY])?;
+    clear_bmp390_interrupt_on(state);
+    Ok(())
+}
+
+fn arm_bmp390_sleep_interrupt(state: &mut PlatformState) {
+    if !state.health.bmp390 || state.bmp_addr == 0 {
+        return;
+    }
+    let _ = configure_bmp390_interrupt(state);
+    let _ = i2c_write(state, state.bmp_addr, &[BMP390_REG_ODR, BMP390_ODR_SLEEP]);
+    clear_bmp390_interrupt_on(state);
+}
+
+fn clear_bmp390_interrupt_on(state: &mut PlatformState) {
+    if state.bmp_addr == 0 {
+        return;
+    }
+    let mut status = [0u8];
+    let _ = i2c_write_read(state, state.bmp_addr, &[BMP390_REG_INT_STATUS], &mut status);
+}
+
+fn clear_bmp390_interrupt() {
+    with_platform(clear_bmp390_interrupt_on);
+}
+
+fn bmp390_interrupt_pending() -> bool {
+    with_platform(|state| {
+        if !state.health.bmp390_int || state.bmp_addr == 0 {
+            return false;
+        }
+        let mut status = [0u8];
+        if i2c_write_read(state, state.bmp_addr, &[BMP390_REG_INT_STATUS], &mut status).is_err() {
+            return false;
+        }
+        status[0] & 0x08 != 0
+    })
+    .unwrap_or(false)
+}
+
+fn button_pressed_now() -> bool {
+    with_platform(|state| {
+        let button = Input::new(
+            state.wake_gpio.reborrow(),
+            InputConfig::default().with_pull(Pull::Down),
+        );
+        button.is_high()
+    })
+    .unwrap_or(false)
 }
 
 fn init_ads1115(state: &mut PlatformState, addr: u8) -> Result<(), ()> {

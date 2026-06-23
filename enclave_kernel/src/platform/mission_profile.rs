@@ -6,7 +6,10 @@
 use core::sync::atomic::{AtomicU8, AtomicU32, Ordering};
 
 const MAGIC: [u8; 4] = *b"AEPR";
-const VERSION: u8 = 1;
+const VERSION: u8 = 2;
+const VERSION_V1: u8 = 1;
+const FLAG_RADIO_ENABLE: u8 = 0x01;
+const FLAG_INTERVAL_WAKE: u8 = 0x02;
 
 pub const DEFAULT_PRESSURE_LIMIT_ATM: f32 = 0.15;
 pub const DEFAULT_DOSE_LIMIT: u32 = 1_000;
@@ -22,6 +25,8 @@ static LEAK_RATE_BITS: AtomicU32 = AtomicU32::new(f32::to_bits(DEFAULT_LEAK_RATE
 static WAKE_MIN: AtomicU8 = AtomicU8::new(DEFAULT_WAKE_MIN_SECS);
 static WAKE_MAX: AtomicU8 = AtomicU8::new(DEFAULT_WAKE_MAX_SECS);
 static LOADED_FROM_SD: AtomicU8 = AtomicU8::new(0);
+static RADIO_ENABLE: AtomicU8 = AtomicU8::new(0);
+static INTERVAL_WAKE: AtomicU8 = AtomicU8::new(0);
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Profile {
@@ -32,6 +37,8 @@ pub struct Profile {
     pub pressure_limit_atm: f32,
     pub dose_limit: u32,
     pub leak_rate_atm_s: f32,
+    pub radio_enable: bool,
+    pub interval_wake: bool,
     pub from_sd: bool,
 }
 
@@ -45,6 +52,8 @@ impl Profile {
             pressure_limit_atm: DEFAULT_PRESSURE_LIMIT_ATM,
             dose_limit: DEFAULT_DOSE_LIMIT,
             leak_rate_atm_s: DEFAULT_LEAK_RATE_ATM_S,
+            radio_enable: false,
+            interval_wake: false,
             from_sd: false,
         }
     }
@@ -62,13 +71,16 @@ fn apply(p: Profile) {
         Ordering::Release,
     );
     LOADED_FROM_SD.store(if p.from_sd { 1 } else { 0 }, Ordering::Release);
+    RADIO_ENABLE.store(if p.radio_enable { 1 } else { 0 }, Ordering::Release);
+    INTERVAL_WAKE.store(if p.interval_wake { 1 } else { 0 }, Ordering::Release);
 }
 
 fn parse_sector(buf: &[u8; 512]) -> Option<Profile> {
     if buf[0..4] != MAGIC {
         return None;
     }
-    if buf[4] != VERSION {
+    let version = buf[4];
+    if version != VERSION && version != VERSION_V1 {
         return None;
     }
     let payload_slot = buf[5].min(1);
@@ -88,6 +100,8 @@ fn parse_sector(buf: &[u8; 512]) -> Option<Profile> {
     if !leak_rate_atm_s.is_finite() || leak_rate_atm_s <= 0.0 {
         return None;
     }
+    let radio_enable = version >= VERSION && buf[24] & FLAG_RADIO_ENABLE != 0;
+    let interval_wake = version >= VERSION && buf[24] & FLAG_INTERVAL_WAKE != 0;
     Some(Profile {
         mission_id,
         payload_slot,
@@ -96,6 +110,8 @@ fn parse_sector(buf: &[u8; 512]) -> Option<Profile> {
         pressure_limit_atm,
         dose_limit,
         leak_rate_atm_s,
+        radio_enable,
+        interval_wake,
         from_sd: true,
     })
 }
@@ -122,6 +138,14 @@ pub fn apply_pot_payload_override(raw_adc: u32) {
         PRESSURE_LIMIT_BITS.store(f32::to_bits(0.10), Ordering::Release);
         DOSE_LIMIT.store(2_000, Ordering::Release);
     }
+    // Pot >90% also enables uplink dry-run (serial hex only; RF still off unless radio-tx).
+    if raw_adc > 28_000 {
+        RADIO_ENABLE.store(1, Ordering::Release);
+    }
+    // Pot <10% enables periodic interval wake (optional scheduled checks).
+    if raw_adc < 3_200 {
+        INTERVAL_WAKE.store(1, Ordering::Release);
+    }
 }
 
 pub fn current() -> Profile {
@@ -133,8 +157,20 @@ pub fn current() -> Profile {
         pressure_limit_atm: f32::from_bits(PRESSURE_LIMIT_BITS.load(Ordering::Acquire)),
         dose_limit: DOSE_LIMIT.load(Ordering::Acquire),
         leak_rate_atm_s: f32::from_bits(LEAK_RATE_BITS.load(Ordering::Acquire)),
+        radio_enable: RADIO_ENABLE.load(Ordering::Acquire) != 0,
+        interval_wake: INTERVAL_WAKE.load(Ordering::Acquire) != 0,
         from_sd: LOADED_FROM_SD.load(Ordering::Acquire) != 0,
     }
+}
+
+/// Periodic RTC timer wake + scheduled logging (off by default).
+pub fn interval_wake_enabled() -> bool {
+    INTERVAL_WAKE.load(Ordering::Acquire) != 0
+}
+
+/// One-way RF uplink after each cycle (off by default; set via SD profile v2).
+pub fn radio_enabled() -> bool {
+    RADIO_ENABLE.load(Ordering::Acquire) != 0
 }
 
 pub fn mission_id() -> u32 {

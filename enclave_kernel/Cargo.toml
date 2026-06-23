@@ -17,6 +17,10 @@ path = "src/main.rs"
 test = false
 bench = false
 
+[features]
+default = []
+radio-tx = []
+
 [dependencies]
 wasmi = { version = "0.31", default-features = false }
 wasmi_core = { version = "0.13", default-features = false }
@@ -30,6 +34,7 @@ x86_64 = { version = "0.15", default-features = false, features = ["instructions
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 esp-hal = { version = "1.1.1", features = ["esp32c6", "unstable"] }
 esp-println = { version = "0.15", default-features = false, features = ["esp32c6", "jtag-serial"] }
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
 
 [package.metadata.bootimage]
 run-command = [

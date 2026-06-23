@@ -61,7 +61,28 @@ pub fn finish_cycle(report: ShutdownReport) {
             active_ms,
         );
 
-        rtc_state::record_cycle(report.proof, sample.pressure_atm.to_bits(), cycle_ms);
+        rtc_state::record_cycle(
+            report.proof,
+            sample.pressure_atm.to_bits(),
+            cycle_ms,
+            sample.dose_scaled,
+        );
+        crate::platform::event_log::push(
+            cycle,
+            report.proof,
+            report.guest_result,
+            report.vector,
+            sample.pressure_atm.to_bits(),
+        );
+        if report.guest_result != 0 {
+            rtc_state::latch_breach(report.guest_result);
+            esp32c6::status_led_on();
+            serial_println!(
+                "[AETHER] BREACH — {} (GPIO10 ON until GPIO2 ACK)",
+                demo::guest_flags_text(report.guest_result),
+            );
+            crate::platform::oled::show_breach_alert(cycle, report.guest_result);
+        }
         crate::platform::oled::show_cycle(
             cycle,
             report.guest_result,
@@ -85,8 +106,11 @@ pub fn finish_cycle(report: ShutdownReport) {
         ) {
             serial_println!("[AETHER] SD — cycle #{} logged", cycle);
         }
+        crate::platform::radio_emit::emit_after_cycle(cycle, report.guest_result, report.proof);
         power_log::log_power_budget(rtc_state::wake_timer_secs());
-        esp32c6::status_led_off();
+        if !rtc_state::breach_latched() {
+            esp32c6::status_led_off();
+        }
     }
 
     #[cfg(not(target_arch = "riscv32"))]
@@ -126,6 +150,9 @@ pub fn enter_absolute_halt() -> ! {
 
     #[cfg(target_arch = "riscv32")]
     {
+        use crate::platform::{oled, rtc_state};
+
+        oled::play_shutdown_splash(rtc_state::wake_timer_secs());
         crate::platform::esp32c6::request_deep_sleep();
     }
 

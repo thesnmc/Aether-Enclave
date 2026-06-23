@@ -1,8 +1,10 @@
-# Aether Enclave — iDEX Open plan (up to ₹1.5 crore)
+# Aether Enclave — iDEX Open Plan (₹1.5 Crore)
 
-Planning document for an **iDEX Open Challenge** application: breadboard prototype today → custom PCB → small batch of field units evaluators can test with a written procedure.
+**Applicant:** The SNMC · **Duration:** 24 months · **Ask:** ₹1.5 crore (programme ceiling)
 
-**Team:** two people — founder (firmware, product, milestones) and one ECE graduate (bring-up, test, EMS liaison). Grant pays **salaries and vendors** (PCB fab, assembly); no other hires planned.
+Breadboard prototype today → custom PCB → evaluator kits → 100 boxed units. Grant builds **The SNMC as a supplier**, not a one-off demo.
+
+**Team:** solo founder (firmware, product, milestones) + **contract vendors** for PCB layout, assembly, and enclosure.
 
 **Today:** working ESP32-C6 firmware, BMP390 + ADS1115 on I2C, OLED, optional microSD log, USB flash/debug, QEMU regression build.
 
@@ -12,26 +14,30 @@ Planning document for an **iDEX Open Challenge** application: breadboard prototy
 
 ## What we are building
 
-A **low-duty-cycle sensor node** that wakes on a schedule or event, runs an isolated WASM check, logs a chained proof hash, and clears RAM before sleeping again.
+An indigenous **sealed compartment integrity witness** — event-driven, air-gapped, tamper-linked proof for NBC envelopes, stored kit, and logistics crates (UAV bay as secondary).
+
+**Runtime:** sleep (µA) → environmental **event** → WASM sandbox check → hash-linked log → RAM wipe → sleep.
 
 | Part | Role today | Phase 2+ |
 |------|------------|----------|
-| ESP32-C6 | Bare-metal host, deep sleep | Same chip on PCB |
-| BMP390 | Pressure (atm) | Production sensor port |
-| ADS1115 + pot | Demo “dose” channel | Real front-end on AIN0 |
-| OLED | Operator readout at demo | Same on PCB |
-| microSD | Offline proof + mission profile | Socket on every unit |
-| WASM payload | Strict / relaxed slots in flash | OTA or SD swap TBD |
+| ESP32-C6 | **Reference** board only | Custom PCB / qualified MCU |
+| BMP390 | Pressure inside seal | Production sensor |
+| ADS1115 + pot | Demo dose channel | Qualified radiological front-end |
+| OLED | Evaluator table demo | Boxed kit |
+| microSD | Offline audit trail | Every unit |
+| WASM | Strict / relaxed policy | SD / field updates |
 
-One USB cable for power and logs. **No Wi‑Fi in this firmware** — any radio would be a separate design review.
+**No Wi‑Fi** in firmware. Radio encrypted uplink = optional roadmap, **off by default**.
 
-**Honest scope:** this grant window targets **evaluator-ready prototypes** (bay / shelter / lab bench), not satellite qualification or flight clearance. Those need different parts, test houses, and a named Service customer.
+**Out of scope:** satellite flight, flight executive, CCTV replacement, certified dosimeter on breadboard.
 
 ---
 
-## Problem statement (draft for application)
+## Problem statement (application)
 
-> Low-power node that wakes on pressure or timer, runs a sandboxed health check, appends a hash-linked log each cycle, and does not keep mission data in RAM between runs.
+> Indigenous low-power witness for **sealed defence compartments**: wakes on pressure/dose events, runs sandboxed health policy, appends **tamper-linked offline proof**, retains **no mission data in RAM** between cycles. ESP32-C6 demonstrates architecture; iDEX delivers **PCB + evaluator kits**.
+
+Full text: [IDEX_APPLICATION.md](IDEX_APPLICATION.md).
 
 ---
 
@@ -40,26 +46,38 @@ One USB cable for power and logs. **No Wi‑Fi in this firmware** — any radio 
 | They ask for | We have / plan |
 |--------------|----------------|
 | Indian R&D | Rust + RISC-V ESP32-C6, built in India |
-| Defence relevance | Platform bay / shelter monitoring; radiation path on roadmap |
+| Defence relevance | **Sealed NBC / compartment witness**; dose path Phase 2 |
 | Prototype → product | Breadboard → PCB → 100 boxed units |
-| Small team | Founder + one engineer; salaries in budget |
+| Small team | Solo founder + contract vendors; salaries in budget |
 | Milestone proof | Git tags, SD logs, demo video, evaluator test sheet |
 
-We commit to **hardware + docs evaluators can run in 24 months**. Full platform sign-off is **out of scope** unless a Service lab agrees a test plan later.
+We commit to **hardware + docs evaluators can run in 24 months**. Post-grant, The SNMC sells and supports the product line under commercial and defence contracts. Full platform sign-off is **out of scope** unless a Service lab agrees a test plan later.
 
 ---
 
-## Team salaries (24 months)
+## Post-grant commercial path
 
-Hardware for the table demo is **under ₹10,000** parts; **no booth rental** in the budget — USB power and a laptop are enough.
+| Segment | Buyer | Why Aether fits |
+|---------|-------|-----------------|
+| Defence sealed volumes | NBC workshops, depots, UAV lines | Air-gap, tamper log, indigenous |
+| Ordnance / sensitive stores | Unit armourers, Q-branch | Offline custody proof |
+| Commercial logistics | Pharma cold chain, hazmat crates | Battery months, no cloud dependency |
 
-| Person | Role | ₹/month | 24 months |
-|--------|------|---------|-----------|
+**Honest limits:** Defence sales are **slow** (tenders, trials). Commercial cold-chain has **competition** (cloud loggers). Our wedge is **ultra-low sleep + air-gap + verifiable log + local alert**, not “cheaper BMP390.” Revenue in years 3–5 depends on evaluator conversion and one commercial pilot — not automatic.
+
+---
+
+## Team compensation and vendor services (24 months)
+
+Hardware for the table demo is **under ₹10,000** parts; **no booth rental** in the budget.
+
+| Line | Role | ₹/month | 24 months |
+|------|------|---------|-----------|
 | Founder | Firmware, WASM host, PCB spec, iDEX reporting | 1.50 L | **36 L** |
-| Engineer (ECE) | Wiring, sensors, SD/OLED, test scripts, EMS | 1.50 L | **36 L** |
+| Vendor & specialist services | PCB layout, EMC pre-scan, enclosure, test house, dosimeter samples | 1.50 L avg | **36 L** |
 | **Total** | | **3.00 L/mo** | **72 L** |
 
-PCB layout and assembly are paid to vendors, not extra headcount.
+The vendor line is **contract spend spread over 24 months**, not a second full-time employee at founder salary. PCB fab and EMS are additionally funded in phase budgets.
 
 ---
 
@@ -67,8 +85,8 @@ PCB layout and assembly are paid to vendors, not extra headcount.
 
 | Line | ₹ | Notes |
 |------|---|--------|
-| Founder salary (24 mo) | 36 L | |
-| Engineer salary (24 mo) | 36 L | |
+| Founder salary (24 mo) | 36 L | ₹1.5 L/mo full-time R&D |
+| Vendor & specialist services (24 mo) | 36 L | PCB, EMC, enclosure, test — contract vendors |
 | Phase 1 — iDEX + PCB v1 | 18 L | Fab, parts, bench gear |
 | Phase 2 — 25 evaluator units | 22 L | PCB v2, travel, spares |
 | Phase 3 — Product pack | 16 L | Enclosure, docs |
@@ -127,6 +145,7 @@ PCB layout and assembly are paid to vendors, not extra headcount.
 
 - [ ] iDEX Open application submitted  
 - [ ] PCB v1 runs **same firmware** as breadboard (pin-compatible)  
+- [ ] **Local breach alert** on OLED + GPIO10 (policy fail / threshold)  
 - [ ] 1000-cycle log on SD without watchdog reset  
 - [ ] Demo video (wake → WASM → OLED → SD line)  
 - [x] PC tools for SD export and proof verify  
@@ -193,7 +212,7 @@ Reviews, DefExpo / Aero India travel, LLP/GST, trademark, milestone reports, con
 
 ## What we are not buying
 
-- Extra hires beyond the two-person team  
+- Extra full-time hires beyond the solo founder + contract vendors  
 - Classic ESP32 (we stay on C6 RISC-V)  
 - Wi‑Fi / cloud uplink without a security review  
 - Paid marketing or booth rental  
@@ -207,19 +226,21 @@ Reviews, DefExpo / Aero India travel, LLP/GST, trademark, milestone reports, con
 2. **25+ evaluator units** with written test results.  
 3. **Custom PCB + enclosure** replacing breadboard.  
 4. **Proof chain** verified on PC from SD export.  
-5. **Two salaries** funded for 24 months of R&D.  
+5. **Founder full-time** for 24 months; vendor network for PCB/EMS.  
 6. **Table demo** that works on every release tag.  
+7. **The SNMC** positioned to bid post-grant — IP, BOM, flash jig, docs.
 
 ---
 
 ## Next actions
 
-1. Solder breadboard when parts arrive — follow [README.md](README.md) wiring.  
-2. Record demo video.  
-3. Finalise iDEX problem statement and submit.  
-4. Get two Indian PCB quotes for v1.  
-5. Run 1000-cycle SD reliability test on breadboard.  
+1. Wire BMP390 **INT → GPIO1**; flash firmware — [README.md](README.md).  
+2. Record demo per [DEMO_VIDEO.md](DEMO_VIDEO.md) (sealed box + tamper fail).  
+3. Submit [IDEX_APPLICATION.md](IDEX_APPLICATION.md).  
+4. Run **1000-cycle** event or interval soak; attach `verify_log.py` output.  
+5. Get **two Indian PCB quotes** (breadboard pinout).  
+6. Email **NBC / logistics / UAV** workshops for evaluator interest.  
 
 ---
 
-*Draft — update when sanction letter and vendor quotes are firm.*
+**The SNMC** · 2026

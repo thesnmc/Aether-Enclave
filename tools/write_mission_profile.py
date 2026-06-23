@@ -8,7 +8,10 @@ import struct
 import sys
 
 MAGIC = b"AEPR"
-VERSION = 1
+VERSION = 2
+VERSION_V1 = 1
+FLAG_RADIO_ENABLE = 0x01
+FLAG_INTERVAL_WAKE = 0x02
 SECTOR = 2047
 SECTOR_SIZE = 512
 
@@ -21,6 +24,8 @@ def build_profile(
     pressure_limit: float,
     dose_limit: int,
     leak_rate: float,
+    radio_enable: bool = False,
+    interval_wake: bool = False,
 ) -> bytes:
     buf = bytearray(SECTOR_SIZE)
     buf[0:4] = MAGIC
@@ -32,6 +37,10 @@ def build_profile(
     struct.pack_into("<f", buf, 12, pressure_limit)
     struct.pack_into("<I", buf, 16, max(100, dose_limit))
     struct.pack_into("<f", buf, 20, leak_rate)
+    if radio_enable:
+        buf[24] |= FLAG_RADIO_ENABLE
+    if interval_wake:
+        buf[24] |= FLAG_INTERVAL_WAKE
     return bytes(buf)
 
 
@@ -45,6 +54,16 @@ def main() -> None:
     p.add_argument("--pressure-limit", type=float, default=0.15)
     p.add_argument("--dose-limit", type=int, default=1000)
     p.add_argument("--leak-rate", type=float, default=0.003, help="atm/s leak wake threshold")
+    p.add_argument(
+        "--radio",
+        action="store_true",
+        help="enable one-way uplink dry-run after each cycle (RF still off unless radio-tx feature)",
+    )
+    p.add_argument(
+        "--interval-wake",
+        action="store_true",
+        help="enable periodic RTC timer wake in addition to sensor events",
+    )
     args = p.parse_args()
 
     slot = 1 if args.payload == "relaxed" else 0
@@ -61,6 +80,8 @@ def main() -> None:
         args.pressure_limit,
         args.dose_limit,
         args.leak_rate,
+        args.radio,
+        args.interval_wake,
     )
 
     try:
@@ -73,7 +94,9 @@ def main() -> None:
 
     print(
         f"wrote sector {SECTOR}: mission={args.mission_id} payload={args.payload} "
-        f"P<{args.pressure_limit} D>{args.dose_limit} leak={args.leak_rate}atm/s"
+        f"P<{args.pressure_limit} D>{args.dose_limit} leak={args.leak_rate}atm/s "
+        f"radio={'ON' if args.radio else 'OFF'} "
+        f"interval={'ON' if args.interval_wake else 'OFF'}"
     )
 
 

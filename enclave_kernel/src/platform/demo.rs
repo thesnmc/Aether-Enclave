@@ -7,7 +7,7 @@ pub fn guest_flags_text(flags: i32) -> &'static str {
     match flags {
         0 => "OK",
         1 => "PRESSURE_LOW",
-        2 => "DOSE_HIGH",
+        2 => "DOSE_DEMO_HIGH",
         3 => "PRESSURE_LOW|DOSE_HIGH",
         _ => "UNKNOWN",
     }
@@ -45,7 +45,7 @@ pub fn guest_flags_oled(flags: i32) -> &'static str {
     match flags {
         0 => "OK / THEEK",
         1 => "CHAP LOW",
-        2 => "DOSE HIGH",
+        2 => "DOSE DEMO HI",
         3 => "DONO ALERT",
         _ => "FAULT",
     }

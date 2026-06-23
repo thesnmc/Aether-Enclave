@@ -14,18 +14,41 @@ struct Layout {
     last_pressure_bits: u32,
     wake_secs: u32,
     last_cycle_ms: u32,
+    last_dose: u32,
+    alert_latched: bool,
+    alert_guest: i32,
+}
+
+const ALERT_LATCH_BIT: u32 = 1;
+
+fn pack_alert(latched: bool, guest: i32) -> u32 {
+    let mut w = ((guest as u32) & 0xFF) << 8;
+    if latched {
+        w |= ALERT_LATCH_BIT;
+    }
+    w
+}
+
+fn unpack_alert(word: u32) -> (bool, i32) {
+    let latched = (word & ALERT_LATCH_BIT) != 0;
+    let guest = ((word >> 8) & 0xFF) as i32;
+    (latched, guest)
 }
 
 #[esp_hal::ram(unstable(rtc_fast, persistent))]
-static mut RTC_WORDS: [u32; 7] = [0; 7];
+static mut RTC_WORDS: [u32; 9] = [0; 9];
 
 static DOSE_SENSITIVITY: AtomicU32 = AtomicU32::new(1_000);
 
 fn read_word(i: usize) -> u32 {
+    if i >= 9 {
+        return 0;
+    }
     unsafe { core::ptr::read_volatile(core::ptr::addr_of!(RTC_WORDS).cast::<u32>().add(i)) }
 }
 
 fn store(l: Layout) {
+    let alert = pack_alert(l.alert_latched, l.alert_guest);
     let words = [
         l.magic,
         l.cycle,
@@ -34,6 +57,8 @@ fn store(l: Layout) {
         l.last_pressure_bits,
         l.wake_secs,
         l.last_cycle_ms,
+        l.last_dose,
+        alert,
     ];
     unsafe {
         let base = core::ptr::addr_of_mut!(RTC_WORDS).cast::<u32>();
@@ -44,6 +69,8 @@ fn store(l: Layout) {
 }
 
 fn layout() -> Layout {
+    let alert_word = read_word(8);
+    let (alert_latched, alert_guest) = unpack_alert(alert_word);
     Layout {
         magic: read_word(0),
         cycle: read_word(1),
@@ -51,6 +78,9 @@ fn layout() -> Layout {
         last_pressure_bits: read_word(4),
         wake_secs: read_word(5),
         last_cycle_ms: read_word(6),
+        last_dose: read_word(7),
+        alert_latched,
+        alert_guest,
     }
 }
 
@@ -64,6 +94,9 @@ fn ensure_valid() -> Layout {
             last_pressure_bits: 0,
             wake_secs: 10,
             last_cycle_ms: 0,
+            last_dose: 0,
+            alert_latched: false,
+            alert_guest: 0,
         };
         store(l);
     }
@@ -121,12 +154,57 @@ pub fn set_wake_timer_from_pot(raw_adc: u32) {
     store(l);
 }
 
+/// Last scaled dose channel saved before sleep.
+pub fn last_dose() -> u32 {
+    ensure_valid().last_dose
+}
+
+/// True after a baseline or completed cycle stored pressure reference.
+pub fn has_sensor_baseline() -> bool {
+    ensure_valid().last_pressure_bits != 0
+}
+
+/// Store reference sensors without incrementing cycle (event-only arm).
+pub fn record_baseline(pressure_bits: u32, dose: u32) {
+    let mut l = ensure_valid();
+    l.last_pressure_bits = pressure_bits;
+    l.last_dose = dose;
+    store(l);
+}
+
 /// Record cycle outcome before sleep.
-pub fn record_cycle(proof: u64, pressure_bits: u32, cycle_ms: u32) {
+pub fn record_cycle(proof: u64, pressure_bits: u32, cycle_ms: u32, dose: u32) {
     let mut l = ensure_valid();
     l.cycle = l.cycle.saturating_add(1);
     l.last_proof = proof;
     l.last_pressure_bits = pressure_bits;
     l.last_cycle_ms = cycle_ms;
+    l.last_dose = dose;
+    store(l);
+}
+
+/// Unacknowledged policy breach — survives deep sleep until GPIO2 ACK.
+pub fn breach_latched() -> bool {
+    ensure_valid().alert_latched
+}
+
+/// Guest status code recorded when breach was latched.
+pub fn breach_guest() -> i32 {
+    ensure_valid().alert_guest
+}
+
+/// Latch operator alert until acknowledge (GPIO2 at wake).
+pub fn latch_breach(guest: i32) {
+    let mut l = ensure_valid();
+    l.alert_latched = true;
+    l.alert_guest = guest;
+    store(l);
+}
+
+/// Operator cleared alert at the box.
+pub fn clear_breach() {
+    let mut l = ensure_valid();
+    l.alert_latched = false;
+    l.alert_guest = 0;
     store(l);
 }
