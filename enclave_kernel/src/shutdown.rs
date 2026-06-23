@@ -49,6 +49,7 @@ pub fn finish_cycle(report: ShutdownReport) {
         );
 
         rtc_state::record_cycle(report.proof, sample.pressure_atm.to_bits());
+        crate::platform::oled::show_cycle(cycle, report.guest_result, report.proof, report.vector);
         esp32c6::status_led_off();
     }
 

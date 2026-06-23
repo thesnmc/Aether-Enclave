@@ -56,6 +56,7 @@ const SENSOR_SAMPLES: usize = 3;
 pub struct SensorHealth {
     pub bmp390: bool,
     pub ads1115: bool,
+    pub oled: bool,
     pub bmp390_addr: u8,
     pub ads1115_addr: u8,
 }
@@ -110,6 +111,14 @@ where
         return None;
     }
     PLATFORM.lock().as_mut().map(f)
+}
+
+/// Borrow the shared I2C bus (sensors + optional OLED).
+pub fn with_i2c_bus<F, R>(f: F) -> Option<R>
+where
+    F: FnOnce(&mut I2c<'static, Blocking>) -> R,
+{
+    with_platform(|state| f(&mut state.i2c))
 }
 
 /// Boot: WDT, I2C @ GPIO6/7, sensors, GPIO2 wake, GPIO10 status LED.
@@ -184,6 +193,10 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
     READY.store(true, Ordering::Release);
     feed_watchdog();
 
+    health.oled = crate::platform::oled::init();
+    if let Some(state) = PLATFORM.lock().as_mut() {
+        state.health.oled = health.oled;
+    }
     health
 }
 

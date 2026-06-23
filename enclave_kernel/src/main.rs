@@ -49,11 +49,12 @@ pub extern "Rust" fn _esp_println_timestamp() -> u64 {
 #[cfg(target_arch = "riscv32")]
 fn log_sensor_health(health: enclave_kernel::platform::esp32c6::SensorHealth) {
     serial_println!(
-        "[AETHER] sensors — BMP390: {} (0x{:02X})  ADS1115: {} (0x{:02X})",
+        "[AETHER] sensors — BMP390: {} (0x{:02X})  ADS1115: {} (0x{:02X})  OLED: {}",
         if health.bmp390 { "OK" } else { "MISSING" },
         health.bmp390_addr,
         if health.ads1115 { "OK" } else { "MISSING" },
         health.ads1115_addr,
+        if health.oled { "OK" } else { "MISSING" },
     );
     if !health.bmp390 || !health.ads1115 {
         serial_println!("[AETHER] hint: check 3.3V, GND, SDA=GPIO6, SCL=GPIO7");
@@ -138,6 +139,7 @@ fn esp_main() -> ! {
     enclave_kernel::platform::esp32c6::apply_pot_mission_profile();
     log_mission_banner(health);
     log_sensor_snapshot();
+    enclave_kernel::platform::oled::show_boot(health.bmp390 && health.ads1115);
 
     if enclave_kernel::platform::esp32c6::detect_demo_mode_hold() {
         demo_loop();
