@@ -215,7 +215,7 @@ fn secure_zero(bytes: &mut [u8]) {
     const CHUNK: usize = 4096;
     for chunk in bytes.chunks_mut(CHUNK) {
         #[cfg(target_arch = "riscv32")]
-        crate::platform::esp32c3::feed_watchdog();
+        crate::platform::esp32c6::feed_watchdog();
         chunk.fill(0);
     }
 }

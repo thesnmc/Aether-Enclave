@@ -1,9 +1,9 @@
 //! Memory-mapped I/O register map for sensor ingress, uplink commit, and serial logging.
 //!
-//! On x86_64 this layer simulates flight registers with atomics. On ESP32-C3 it delegates
-//! sensor reads to the BMP390 / ADS1115 drivers while preserving the logical MMIO contract.
+//! On x86_64 this layer simulates sensor registers with atomics. On ESP32-C6 it reads
+//! BMP390 / ADS1115 over I2C while keeping the same register layout for the WASM host.
 
-use core::fmt::{self, Write};
+use core::fmt;
 use core::sync::atomic::{AtomicU32, Ordering};
 use spin::Mutex;
 
@@ -88,7 +88,7 @@ pub fn read_kinetic_joint() -> u32 {
 pub fn read_atmospheric_pressure() -> f32 {
     #[cfg(target_arch = "riscv32")]
     {
-        let pressure = crate::platform::esp32c3::read_bmp390_pressure();
+        let pressure = crate::platform::esp32c6::read_bmp390_pressure();
         LIVE_ATM_PRESSURE_BITS.store(pressure.to_bits(), Ordering::Release);
         return pressure;
     }
@@ -103,7 +103,7 @@ pub fn read_atmospheric_pressure() -> f32 {
 pub fn read_radiation_dosimeter() -> u32 {
     #[cfg(target_arch = "riscv32")]
     {
-        let dose = crate::platform::esp32c3::read_ads1115_dose();
+        let dose = crate::platform::esp32c6::read_ads1115_dose();
         LIVE_RADIATION.store(dose, Ordering::Release);
         return dose;
     }
@@ -196,7 +196,7 @@ unsafe fn write_volatile_u32(addr: usize, value: u32) {
 // Serial logging
 // ---------------------------------------------------------------------------
 
-/// Initialize the platform console (COM1 on x86, UART0 on ESP32-C3).
+/// Initialize the platform console (COM1 on x86; USB Serial/JTAG on ESP32-C6 needs no setup).
 pub fn serial_init() {
     #[cfg(target_arch = "x86_64")]
     x86_serial::serial_init();
@@ -210,7 +210,9 @@ pub fn serial_write_fmt(args: fmt::Arguments<'_>) {
     }
     #[cfg(target_arch = "riscv32")]
     {
-        crate::platform::esp32c3::serial_write_fmt(args);
+        use core::fmt::Write;
+        let mut printer = esp_println::Printer;
+        let _ = printer.write_fmt(args);
     }
 }
 

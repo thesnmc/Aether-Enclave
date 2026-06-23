@@ -32,6 +32,12 @@ static LAST_VECTOR: AtomicU8 = AtomicU8::new(0);
 static WAKE_PENDING: AtomicBool = AtomicBool::new(false);
 static BOOTSTRAP_ACTIVE: AtomicBool = AtomicBool::new(false);
 
+/// Record the hardware vector for proof logging (used on cold-boot self-test).
+#[inline]
+pub fn latch_vector(vector: u8) {
+    LAST_VECTOR.store(vector, Ordering::Release);
+}
+
 /// Last hardware vector latched by the ISR (observability / proof chaining).
 #[inline]
 pub fn last_vector() -> u8 {
@@ -56,10 +62,10 @@ pub fn init() {
     x86_init_idt();
 }
 
-/// Decode ESP32-C3 RTC wake cause into a hardware vector (cold boot returns `None`).
+/// Decode ESP32-C6 RTC wake cause into a hardware vector (cold boot returns `None`).
 #[cfg(target_arch = "riscv32")]
 pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
-    crate::platform::esp32c3::detect_wake_trigger().inspect(|trigger| {
+    crate::platform::esp32c6::detect_wake_trigger().inspect(|trigger| {
         LAST_VECTOR.store(*trigger as u8, Ordering::Release);
     })
 }

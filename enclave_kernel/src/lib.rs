@@ -1,7 +1,7 @@
 //! # AETHER-ENCLAVE kernel (`enclave_kernel`)
 //!
-//! Ring-0, `#![no_std]` unikernel that boots the `aerospace_payload` WebAssembly module,
-//! commits a verifiable outcome via MMIO, and returns to zero-power dormancy.
+//! `#![no_std]` bare-metal host that loads the `aerospace_payload` WebAssembly module,
+//! writes a proof hash to MMIO, wipes memory, and returns to sleep.
 
 #![no_std]
 #![warn(missing_docs)]

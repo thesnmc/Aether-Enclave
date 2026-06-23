@@ -3,7 +3,7 @@ name = "enclave_kernel"
 version = "0.1.0"
 edition = "2021"
 authors = ["AETHER-ENCLAVE Program"]
-description = "Atmospheric-State Execution Module — radiation-resilient no_std unikernel WASM host"
+description = "Bare-metal no_std WASM host for ESP32-C6 and x86 QEMU"
 license = "AGPL-3.0-or-later"
 build = "build.rs"
 
@@ -29,7 +29,7 @@ x86_64 = { version = "0.15", default-features = false, features = ["instructions
 
 [target.'cfg(target_arch = "riscv32")'.dependencies]
 esp-hal = { version = "1.1.1", features = ["esp32c6", "unstable"] }
-static_cell = "2"
+esp-println = { version = "0.15", default-features = false, features = ["esp32c6", "jtag-serial"] }
 
 [package.metadata.bootimage]
 run-command = [

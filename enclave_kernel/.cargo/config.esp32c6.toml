@@ -1,0 +1,12 @@
+# ESP32-C6 bare-metal target (esp-hal + esp-println over USB Serial/JTAG).
+# Build: cargo +esp build --release
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+runner = "espflash flash --monitor --chip esp32c6"
+rustflags = [
+    "--clear",
+    "-C", "link-arg=-Tlinkall.x",
+]

@@ -1,27 +1,17 @@
 [build]
-# We are setting the default target to your new physical hardware (ESP32-C6)
-# If you ever want to run the x86 QEMU version again, just override it in the terminal:
-# cargo +nightly build --target x86_64-unknown-none
 target = "riscv32imac-unknown-none-elf"
 
 [unstable]
 build-std = ["core", "alloc", "compiler_builtins"]
 build-std-features = ["compiler-builtins-mem"]
 
-# ==========================================
-# ESP32-C6 BARE-METAL HARDWARE (NEW)
-# ==========================================
 [target.riscv32imac-unknown-none-elf]
-runner = "espflash flash --monitor"
+runner = "espflash flash --monitor --chip esp32c6"
 rustflags = [
     "-C", "link-arg=-Tlinkall.x",
 ]
 
-# ==========================================
-# X86_64 QEMU / BOOTLOADER (PRESERVED)
-# ==========================================
 [target.x86_64-unknown-none]
-# Hand off running tasks to bootimage tool, which reads its configuration from Cargo.toml
 runner = "bootimage runner"
 rustflags = [
     "-C", "relocation-model=static",

@@ -1,286 +1,216 @@
-# Aether Enclave — Systems Architecture
+# Aether Enclave — Architecture
 
-This document is the technical blueprint for the **Aether Enclave** workspace: a `#![no_std]` x86_64 unikernel that hosts a `wasm32-unknown-unknown` diagnostic payload under **wasmi**, with hardware-tethered MMIO and a mandatory post-run annihilation phase.
+Technical reference for the Aether Enclave workspace: a `#![no_std]` bare-metal kernel that runs a `wasm32-unknown-unknown` payload in **wasmi**, with MMIO-mapped sensors and a mandatory memory wipe after each run.
 
 ---
 
 ## Table of contents
 
 1. [Design goals](#1-design-goals)
-2. [Physical and logical topology](#2-physical-and-logical-topology)
-3. [Ring-0 boot sequence](#3-ring-0-boot-sequence)
-4. [Interrupt and dormancy model](#4-interrupt-and-dormancy-model)
-5. [Memory architecture](#5-memory-architecture)
+2. [System layout](#2-system-layout)
+3. [Boot sequence](#3-boot-sequence)
+4. [Wake and sleep model](#4-wake-and-sleep-model)
+5. [Memory layout](#5-memory-layout)
 6. [WASM host bridge (`aether`)](#6-wasm-host-bridge-aether)
-7. [Sovereign bootstrap pipeline](#7-sovereign-bootstrap-pipeline)
-8. [MMIO map and proof commit](#8-mmio-map-and-proof-commit)
-9. [Self-annihilation](#9-self-annihilation)
+7. [Run pipeline](#7-run-pipeline)
+8. [MMIO register map](#8-mmio-register-map)
+9. [Memory wipe and sleep](#9-memory-wipe-and-sleep)
 10. [QEMU exit code 33](#10-qemu-exit-code-33)
-11. [Build and artifact flow](#11-build-and-artifact-flow)
+11. [Build flow](#11-build-flow)
+12. [ESP32-C6 vs classic ESP32](#12-esp32-c6-vs-classic-esp32)
 
 ---
 
 ## 1. Design goals
 
-| Goal | Mechanism |
-|------|-----------|
-| **No persistent secrets** | Bump arena reset + sandbox `fill(0)` + GPR `xor` scrub every cycle |
-| **Guest isolation** | Separate static regions; `cap_guest_memory` enforces Wasm linear memory ≤ 2 MiB |
-| **Deterministic wake work** | No scheduler: ISR → `sovereign_bootstrap` → shutdown |
-| **Hardware-attested outcome** | 64-bit proof written to MMIO before power-down |
-| **Replaceable mission logic** | Rebuild `aerospace_payload.wasm`; kernel embeds bytes at compile time |
+| Goal | How |
+|------|-----|
+| No data left in RAM after a cycle | Bump arena reset + sandbox `fill(0)` + register scrub |
+| Guest isolation | Static sandbox buffer; `cap_guest_memory` enforces Wasm linear memory cap |
+| Predictable timing | No scheduler: wake → run WASM → wipe → sleep |
+| Checkable output | 64-bit proof hash written to MMIO before sleep |
+| Swappable logic | Rebuild `aerospace_payload.wasm`; kernel embeds bytes at compile time |
 
 ---
 
-## 2. Physical and logical topology
+## 2. System layout
 
 ```text
-                    ┌─────────────────────────────────────────────┐
-                    │           enclave_kernel (Ring 0)            │
-                    │  ┌─────────┐  ┌──────────┐  ┌────────────┐ │
-  IRQ 0x20/0x21 ───▶│  │   IDT   │─▶│ AetherHost│─▶│ MMIO / UART │ │
-                    │  └─────────┘  │  (wasmi)  │  └────────────┘ │
-                    │               └─────┬────┘                  │
-                    │                     │ imports "aether"       │
-                    │               ┌─────▼─────┐                  │
-                    │               │ WASM guest │                 │
-                    │               │ aerospace_ │                 │
-                    │               │  payload   │                 │
-                    │               └────────────┘                 │
-                    └─────────────────────────────────────────────┘
+                    ┌─────────────────────────────────────────┐
+  Wake 0x20/0x21 ─▶│           enclave_kernel               │
+                    │  ┌─────────┐  ┌──────────┐  ┌────────┐ │
+                    │  │ IDT or  │─▶│ AetherHost│─▶│ MMIO   │ │
+                    │  │ wake    │  │  (wasmi)  │  │ / log  │ │
+                    │  └─────────┘  └─────┬────┘  └────────┘ │
+                    │                     │ imports "aether"  │
+                    │               ┌─────▼─────┐             │
+                    │               │ WASM guest│             │
+                    │               │ aerospace_│             │
+                    │               │  payload  │             │
+                    │               └───────────┘             │
+                    └─────────────────────────────────────────┘
                               ▲                    │
-                              │ MMIO reads/writes  │ proof / telemetry
+                              │ sensor reads       │ proof hash
                               └────────────────────┘
-                         (simulated flight sensors)
+                         (QEMU sim or I2C on C6)
 ```
 
 **Trust boundaries:**
 
-- **Inside guest linear memory** — stack, `TelemetryRecord`, Wasm locals only.
-- **Host-only** — bump arena, wasmi engine/store, IDT, ISR stack, MMIO simulation atoms.
-- **Bridge** — `extern "C"` Wasm imports implemented by `HostCalls` + `Linker::func_wrap`.
+- **Guest linear memory** — stack, `TelemetryRecord`, Wasm locals only.
+- **Host only** — bump arena, wasmi engine, IDT (x86) or platform drivers (C6), MMIO staging.
+- **Bridge** — Wasm imports implemented by `HostCalls` + `Linker::func_wrap`.
 
 ---
 
-## 3. Ring-0 boot sequence
+## 3. Boot sequence
 
-| Phase | Component | Behavior |
-|-------|-----------|----------|
-| 1 | **bootloader** (`bootloader` 0.9) | Loads the kernel ELF, sets up stack and page tables, jumps to `kernel_main` with `BootInfo` |
-| 2 | `kernel_main` | `memory::reset_arena()`, `mmio::serial_init()`, `interrupts::init()` (install IDT on x86_64) |
-| 3 | Bench harness (dev) | `sim_inject_o2_drop()` + `software_trigger(0x20)` — optional pre-flight simulation |
-| 4 | `dormancy_loop` | `sti` → `hlt` until `wake_pending()` → `sovereign_bootstrap` |
+### x86_64 (QEMU)
 
-The kernel is `#![no_main]`; entry is via `bootloader::entry_point!(kernel_main)`.
+| Step | Component | Action |
+|------|-----------|--------|
+| 1 | `bootloader` 0.9 | Load kernel ELF, set up page tables, jump to `kernel_main` |
+| 2 | `kernel_main` | `reset_arena()`, COM1 init, IDT install |
+| 3 | Bench (dev) | `sim_inject_o2_drop()` + software IRQ `0x20` |
+| 4 | `dormancy_loop` | `sti` → `hlt` until wake → run pipeline |
 
-**Linking:** `.cargo/config.toml` sets `target = x86_64-unknown-none`, `build-std` for `core`/`alloc`, and `relocation-model=static`. Custom layout may be provided via `enclave_kernel/link.x`.
+Entry: `bootloader::entry_point!(kernel_main)`.
 
----
+### ESP32-C6 (hardware)
 
-## 4. Interrupt and dormancy model
+| Step | Component | Action |
+|------|-----------|--------|
+| 1 | ROM + esp-hal | `esp_hal::init`, USB Serial/JTAG ready via esp-println |
+| 2 | `esp_main` | Platform init (I2C, WDT, GPIO2), `reset_arena()` |
+| 3 | Wake decode | If not cold boot, map RTC wake cause → vector 0x20 or 0x21 |
+| 4 | Run or sleep | Run pipeline on wake; otherwise deep sleep (10 s + GPIO2) |
 
-### Vectors
-
-| Vector | `HardwareInterrupt` | Typical cause |
-|--------|---------------------|---------------|
-| `0x20` | `AtmosphericPressureThreshold` | Barometric / O₂ partial pressure below mission limit |
-| `0x21` | `KineticJointActuation` | Deployment / joint strain pulse |
-
-### ISR contract
-
-On x86_64, ISRs:
-
-1. **`cli`** — suppress nested interrupts during bootstrap.
-2. Latch `LAST_VECTOR` and `WAKE_PENDING`.
-3. Invoke `runtime::sovereign_bootstrap` (or defer to dormant loop depending on path).
-
-The **dormant core** runs with interrupts **enabled** (`sti`) and blocks on **`hlt`**. This approximates a C1-equivalent wait for the next physical trigger.
-
-### Software trigger (HIL)
-
-`interrupts::software_trigger` sets the wake latch without external hardware—used by QEMU bench runs in `main.rs`.
+Entry: `#[esp_hal::main] fn esp_main()`.
 
 ---
 
-## 5. Memory architecture
+## 4. Wake and sleep model
 
-All host and guest backing stores are **static**, guarded by `spin::Mutex`, and sized at compile time.
+### Vectors (same IDs on both targets)
 
-### Region summary
+| Vector | Name | Typical cause |
+|--------|------|---------------|
+| `0x20` | `AtmosphericPressureThreshold` | Pressure below limit / GPIO2 wake on C6 |
+| `0x21` | `KineticJointActuation` | Strain pulse / 10 s timer wake on C6 |
+
+### x86_64
+
+ISRs mask nested interrupts, latch the vector, and call the run pipeline. Dormant loop uses `sti` + `hlt`.
+
+`software_trigger()` injects an IRQ for QEMU bench runs.
+
+### ESP32-C6
+
+There is no IDT. Deep sleep resets the CPU. On boot, `detect_wake_trigger()` reads `SleepSource`:
+
+- `Timer` → vector `0x21`
+- `Gpio` / `Ext0` / `Ext1` → vector `0x20`
+- Power-on reset → `None` (no WASM run until first wake)
+
+---
+
+## 5. Memory layout
+
+All backing stores are **static** `Mutex` buffers sized at compile time.
+
+### ESP32-C6 (512 KiB SRAM budget)
 
 | Region | Constant | Size | Purpose |
 |--------|----------|------|---------|
-| Guest sandbox backing | `SANDBOX_MEMORY_SIZE` | **2 MiB** | Upper bound for Wasm linear memory validation |
-| Host bump arena | `ARENA_SIZE` / `HEAP_SIZE` | **4 MiB** | `#[global_allocator]` for wasmi module compile, instantiate, interpreter |
-| ISR stack | `ISR_STACK_SIZE` | 4 KiB | Dedicated interrupt stack |
-| Wasm page | `WASM_PAGE_SIZE` | 64 KiB (65,536 B) | Spec page size for `cap_guest_memory` math |
+| Guest sandbox cap | `SANDBOX_MEMORY_SIZE` | 64 KiB | Max Wasm linear memory |
+| Host bump arena | `ARENA_SIZE` | 128 KiB | wasmi compile + instantiate + heap |
+| ISR stack | `ISR_STACK_SIZE` | 4 KiB | Reserved (x86 ISR path) |
 
-```text
-  Host address space (conceptual)
-  ┌──────────────────────────────────────┐  high
-  │  ARENA (4 MiB) — wasmi, alloc        │
-  ├──────────────────────────────────────┤
-  │  SANDBOX (2 MiB) — guest mem cap     │
-  ├──────────────────────────────────────┤
-  │  ISR_STACK (4 KiB)                   │
-  └──────────────────────────────────────┘  low / static .bss
-```
+### x86_64 (QEMU — more RAM available)
 
-### Bump arena (`ArenaAllocator`)
+Same constants in code today; QEMU has headroom if you increase them for larger guests.
 
-- **Alloc:** align cursor, bump, return pointer; **no free** until `reset_arena()`.
-- **OOM:** returns null → allocation fails → may panic in wasmi/alloc paths.
-- **Per-cycle reset:** `sovereign_bootstrap` calls `memory::reset_arena()` first so each wake gets a fresh 4 MiB budget.
+### Bump arena
 
-Production note: a 4 MiB arena was required empirically for `Module::new` + `linker.instantiate` on the embedded diagnostic module; 128 KiB caused silent OOM panics before trap logging.
+- Alloc: align cursor, bump pointer; no free until `reset_arena()`.
+- Each wake calls `reset_arena()` first for a clean heap.
 
-### `cap_guest_memory` — strict linear memory perimeter
+### `cap_guest_memory`
 
-After `linker.instantiate`, the host validates exported `memory`:
+After instantiate, validate exported `memory`:
 
 ```rust
-let pages = mem.current_pages(&*store);
-let page_count = u32::from(pages) as usize;
-let guest_bytes = page_count * WASM_PAGE_SIZE;  // pages × 65_536
-
-// Invariant: wasmi slice length must match page-derived size
-assert data_len == guest_bytes;
-
-// Policy: reject if guest linear memory exceeds static sandbox policy
-if guest_bytes > SANDBOX_MEMORY_SIZE { trap; }
+guest_bytes = pages × 65_536
+if guest_bytes > SANDBOX_MEMORY_SIZE { trap }
 ```
 
-| Check | Rationale |
-|-------|-----------|
-| `pages × 65536` | Wasm spec page size; avoids ambiguity vs raw `len()` alone |
-| `data_len == guest_bytes` | Detects inconsistent wasmi state early |
-| `guest_bytes ≤ 2 MiB` | Rust `wasm32` modules with 16+ pages (1 MiB+) must not exceed enclave policy |
-
-The checker **does not zero** guest linear memory post-instantiate (data/BSS already initialized by the loader; zeroing caused spurious traps).
-
-Typical `aerospace_payload` module: **16 minimum pages** (1 MiB linear memory) — fits within the 2 MiB cap.
+Typical `aerospace_payload` fits within the 64 KiB cap when built with `opt-level = "z"`.
 
 ---
 
 ## 6. WASM host bridge (`aether`)
 
-### Module naming
+### Import module name: `"aether"`
 
-| Side | Name |
-|------|------|
-| Wasm import module | `"aether"` (`HOST_IMPORT_MODULE`) |
-| Guest Rust | `#[link(wasm_import_module = "aether")]` |
-| Host linker | `Linker::func_wrap("aether", …)` |
+| Symbol | Type | Host |
+|--------|------|------|
+| `read_atmospheric_pressure` | `() -> f32` | BMP390 on C6; simulated on x86 |
+| `read_radiation_dosimeter` | `() -> i32` | ADS1115 on C6; simulated on x86 |
+| `commit_telemetry_vector` | `(i32, i32) -> ()` | Bounds-checked copy from guest memory |
+| `commit_uplink` | `(i32, i32) -> ()` | Optional guest proof write |
 
-### Import / export contract
-
-**Guest imports (required for production `evaluate_limits`):**
-
-| Symbol | Wasm type | Host implementation |
-|--------|-----------|---------------------|
-| `read_atmospheric_pressure` | `() -> f32` | `mmio::read_atmospheric_pressure()` → `wasmi_core::F32` |
-| `read_radiation_dosimeter` | `() -> i32` | `mmio::read_radiation_dosimeter()` as `i32` |
-| `commit_telemetry_vector` | `(i32, i32) -> ()` | Bounds-checked copy from guest linear memory → MMIO staging |
-| `commit_uplink` | `(i32, i32) -> ()` | Optional guest-driven proof write (host also commits post-run) |
-
-**Guest exports:**
+### Guest exports
 
 | Symbol | Role |
 |--------|------|
-| `evaluate_limits` | Primary entry: `() -> i32` status bitmask |
-| `diagnostic` | Alias forwarding to `evaluate_limits` |
-| `payload_version` | `() -> u32` magic `0xA17E_0001` |
-| `memory` | Exported linear memory (Rust `static` data) |
+| `evaluate_limits` | Main entry: `() -> i32` status flags |
+| `diagnostic` | Alias to `evaluate_limits` |
+| `payload_version` | Returns `0xA17E_0001` |
+| `memory` | Linear memory export |
 
-### Guest status bitmask (`evaluate_limits` return)
+### Status flags (`evaluate_limits` return)
 
 | Flag | Value | Condition |
 |------|-------|-----------|
-| `STATUS_PRESSURE_LOW` | `0x1` | `pressure < 0.15` atm |
-| `STATUS_DOSE_HIGH` | `0x2` | `dose > 1000` |
-| `STATUS_BOTH` | `0x3` | Bench injection: 0.12 atm, 1250 dose |
-
-### Guest source pattern
-
-```rust
-#[no_mangle]
-pub extern "C" fn evaluate_limits() -> i32 {
-    let pressure = unsafe { read_atmospheric_pressure() };
-    let dose = unsafe { read_radiation_dosimeter() } as u32;
-    // ... limit checks ...
-    unsafe { commit_telemetry_vector(ptr, len) };
-    flags
-}
-```
-
-### Host `HostState` (per-store context)
-
-Caches `last_pressure`, `last_dose`, `last_sensor`, `guest_result`, and `trigger` for proof fusion after the guest returns.
-
-### Instantiation sequence (`AetherHost::instantiate`)
-
-1. `Engine::new` / `Store::new`
-2. `Module::new(WASM_BYTES)`
-3. `link_aether_host` — register all `aether` imports
-4. `linker.instantiate` + `ensure_no_start`
-5. `cap_guest_memory`
-6. Resolve `evaluate_limits` or fallback `diagnostic` as `TypedFunc<(), i32>`
-
-Errors are classified on COM1 without heap formatting: `ERR: Linker`, `Instantiation`, `Trap`, `Unknown`.
+| `STATUS_PRESSURE_LOW` | `0x1` | pressure < 0.15 atm |
+| `STATUS_DOSE_HIGH` | `0x2` | dose > 1000 |
+| Both | `0x3` | x86 bench: 0.12 atm, 1250 dose |
 
 ---
 
-## 7. Sovereign bootstrap pipeline
+## 7. Run pipeline
 
-`runtime::sovereign_bootstrap(trigger)` — single cooperative “micro-cycle”:
+`runtime::sovereign_bootstrap(trigger)`:
 
 ```text
 reset_arena()
-    → AetherHost::instantiate(trigger)
-    → run_diagnostic()          // diagnostic.call(())
-    → commit_outcome(guest_result)
-    → shutdown::self_annihilate(ShutdownReport { guest_result, proof, vector })
+  → AetherHost::instantiate(trigger)
+  → run_diagnostic()     // call evaluate_limits
+  → commit_outcome()
+  → shutdown::self_annihilate()
 ```
 
-On failure: `log_wasmi_error` → `fault_shutdown(-1)` (proof zeroed).
+On failure: log error class on serial → wipe with proof zeroed.
 
-**No scheduler, no threads, no async.** ISR stack and interrupt masking keep the path bounded.
+No threads, no async.
 
 ---
 
-## 8. MMIO map and proof commit
+## 8. MMIO register map
 
-### Sensor / actuator registers (placeholder physical addresses)
+Logical addresses (stable across targets; backed by atomics or live sensor reads):
 
-| Symbol | Address | Width | Content |
-|--------|---------|-------|---------|
-| `REG_ATOMIC_O2_SENSOR` | `0xFEF0_0000` | u32 | Simulated ADC counts |
-| `REG_KINETIC_JOINT` | `0xFEF0_0004` | u32 | Strain gauge |
-| `REG_ATMOSPHERIC_PRESSURE` | `0xFEF0_0008` | u32 | `f32` bit pattern (atm) |
-| `REG_RADIATION_DOSIMETER` | `0xFEF0_000C` | u32 | Dose units |
-| `REG_UPLINK_COMMIT_LO` | `0xFEF0_0010` | u32 | Proof low word |
-| `REG_UPLINK_COMMIT_HI` | `0xFEF0_0014` | u32 | Proof high word |
-| `REG_PMU_COMMAND` | `0xFEF0_0020` | u32 | `PMU_CMD_DORMANT`, etc. |
+| Symbol | Address | Content |
+|--------|---------|---------|
+| `REG_ATOMIC_O2_SENSOR` | `0xFEF0_0000` | Raw ADC counts |
+| `REG_KINETIC_JOINT` | `0xFEF0_0004` | Strain gauge |
+| `REG_ATMOSPHERIC_PRESSURE` | `0xFEF0_0008` | `f32` bit pattern (atm) |
+| `REG_RADIATION_DOSIMETER` | `0xFEF0_000C` | Dose counts |
+| `REG_UPLINK_COMMIT_LO` | `0xFEF0_0010` | Proof low 32 bits |
+| `REG_UPLINK_COMMIT_HI` | `0xFEF0_0014` | Proof high 32 bits |
+| `REG_PMU_COMMAND` | `0xFEF0_0020` | Sleep command latch |
 
-Simulation uses atomics + `Mutex` for telemetry buffer (`TELEMETRY_VECTOR_CAP = 64`).
-
-### Telemetry record (guest → host)
-
-```rust
-#[repr(C)]
-pub struct TelemetryRecord {
-    pub flags: u8,
-    pub _pad: [u8; 3],
-    pub pressure_bits: u32,
-    pub dose: u32,
-}
-```
-
-Guest passes a pointer/length into `commit_telemetry_vector`; host copies from **guest linear memory** after bounds checks.
-
-### 64-bit proof digest (host post-run)
-
-After `evaluate_limits` returns, `commit_outcome` computes:
+### Proof hash (host, after guest returns)
 
 ```text
 proof_lo = (guest_result as u32) XOR last_dose XOR last_sensor
@@ -288,115 +218,88 @@ proof_hi = last_dose.rotate_left(9) XOR to_bits(last_pressure) XOR 0xA17E_0001
 proof    = (proof_hi << 32) | proof_lo
 ```
 
-Written via `mmio::commit_proof` to uplink registers. This is a **compact cryptographic-style commitment** suitable for ground verification or downstream ZKP circuits—not a full proving system on-device.
+### ESP32-C6 I2C wiring (see `platform/esp32c6.rs`)
 
-### Bench injection
-
-`sim_inject_o2_drop()`:
-
-- Pressure → **0.12** atm  
-- Dose → **1250**  
-- Triggers software IRQ **0x20**
-
-Expected serial line: `guest=3`, non-zero `proof=0x…`, `vector=0x20`.
+- SDA: GPIO8, SCL: GPIO9 @ 400 kHz
+- BMP390 @ `0x76`, ADS1115 @ `0x48`
+- Wake button: GPIO2 (active high, pull-down)
 
 ---
 
-## 9. Self-annihilation
+## 9. Memory wipe and sleep
 
-`shutdown::self_annihilate` is `-> !` and runs on **success** and on **panic** (via `#[panic_handler]` in `main.rs`).
+`shutdown::self_annihilate` runs on success and on kernel panic.
 
 | Step | Action |
 |------|--------|
-| 1 | Log `ShutdownReport` on COM1 |
-| 2 | `memory::annihilate_sandbox()` — zero 2 MiB sandbox, seal |
-| 3 | `memory::reset_arena()` — zero 4 MiB arena cursor |
-| 4 | `clear_architectural_state()` — `xor` GPRs |
-| 5 | `mmio::request_dormancy()` — PMU command register |
-| 6 | `enter_absolute_halt()` — see below |
+| 1 | Log `ShutdownReport` on serial |
+| 2 | `annihilate_sandbox()` — zero sandbox |
+| 3 | `reset_arena()` — zero heap arena |
+| 4 | `clear_architectural_state()` — zero GPRs |
+| 5 | `request_dormancy()` — PMU latch |
+| 6 | Platform sleep |
 
-### Hardware halt sequence (x86_64)
+**x86:** write QEMU debug exit port `0xf4`, then `cli` + `hlt`.
 
-```rust
-// 1. QEMU test exit (when device present)
-Port::<u32>::new(0xf4).write(0x10);
-
-// 2. Absolute halt
-asm!("cli", "hlt", options(nomem, nostack, noreturn));
-```
-
-**`cli`** — interrupts disabled before final halt (no further ISR delivery).  
-**`hlt`** — processor sleep until reset/NMI; in QEMU with `isa-debug-exit`, the I/O write typically ends the VM first.
+**ESP32-C6:** RTC deep sleep (feeds WDT during long zero loops).
 
 ---
 
 ## 10. QEMU exit code 33
 
-The runner attaches:
+Runner device: `isa-debug-exit,iobase=0xf4`.
 
-```text
--device isa-debug-exit,iobase=0xf4,iosize=0x04
-```
+Kernel writes `0x10` to port `0xf4`. QEMU exit code = `(value << 1) | 1` → **33 = success**.
 
-On success, the kernel writes to I/O port **`0xf4`**:
-
-```rust
-const QEMU_DEBUG_EXIT_SUCCESS: u32 = 0x10;
-debug_exit.write(QEMU_DEBUG_EXIT_SUCCESS);
-```
-
-**QEMU `isa-debug-exit` semantics:** an I/O write of value `V` terminates the virtual machine with host process exit code:
-
-```text
-exit_code = (V << 1) | 1
-```
-
-For `V = 0x10` (16):
-
-```text
-exit_code = (16 << 1) | 1 = 33
-```
-
-Therefore **`33` is success**, not failure. CI harnesses should treat `33` as a clean mission cycle completion after the self-annihilation path.
+Not used on ESP32-C6; use the serial proof line instead.
 
 ---
 
-## 11. Build and artifact flow
+## 11. Build flow
 
 ```text
 aerospace_payload (wasm32-unknown-unknown, release, cdylib)
         │
         ▼
-target/wasm32-unknown-unknown/release/aerospace_payload.wasm
+target/wasm-payload/wasm32-unknown-unknown/release/aerospace_payload.wasm
         │
         ▼  enclave_kernel/build.rs
 enclave_kernel/src/wasm_payload.rs   // pub const WASM_BYTES: &[u8]
         │
-        ▼  cargo +nightly build -Z build-std …
-bootimage → QEMU x86_64 bare-metal binary
+        ├──▶ cargo +esp build  → espflash → ESP32-C6
+        └──▶ cargo +nightly build (x86_64) → bootimage → QEMU
 ```
 
-| Input change | Rebuild trigger |
-|--------------|-----------------|
-| `aerospace_payload/src/**` | `build.rs` rerun → new `WASM_BYTES` |
-| `enclave_kernel/src/**` | Normal Rust rebuild |
-
-**Profiles:** workspace `release` uses `opt-level = "z"`, `lto = true`, `panic = "abort"` — appropriate for size-constrained flight images.
+Release profile: `opt-level = "z"`, `lto = true`, `panic = "abort"`.
 
 ---
 
-## Related files
+## 12. ESP32-C6 vs classic ESP32
 
-| Path | Responsibility |
-|------|----------------|
-| `enclave_kernel/src/main.rs` | Boot, dormancy loop, panic handler |
-| `enclave_kernel/src/runtime.rs` | wasmi host, `cap_guest_memory`, bootstrap |
+| | Classic ESP32 | ESP32-C6 |
+|---|---------------|----------|
+| ISA | Xtensa | RISC-V (`riscv32imac`) |
+| Rust bare-metal | Custom Xtensa LLVM; harder without FreeRTOS | First-class esp-hal support |
+| USB debug | External UART chip or JTAG probe | On-chip USB Serial/JTAG |
+| 802.15.4 radio | Not present | Present (unused in this project) |
+
+This kernel does not implement networking of any kind. The C6 was chosen for RISC-V tooling and native USB flash/debug on a budget board.
+
+---
+
+## Source file map
+
+| Path | Role |
+|------|------|
+| `enclave_kernel/src/main.rs` | Entry, sleep loop, panic handler |
+| `enclave_kernel/src/platform/esp32c6.rs` | I2C sensors, WDT, deep sleep |
+| `enclave_kernel/src/runtime.rs` | wasmi host, memory cap, run pipeline |
 | `enclave_kernel/src/memory.rs` | Arena, sandbox, global allocator |
-| `enclave_kernel/src/mmio.rs` | Register map, sensors, proof, UART |
-| `enclave_kernel/src/interrupts.rs` | IDT, vectors, `hlt`/`cli` helpers |
-| `enclave_kernel/src/shutdown.rs` | Annihilation + QEMU exit |
-| `aerospace_payload/src/lib.rs` | Mission WASM logic |
+| `enclave_kernel/src/mmio.rs` | Registers, sensors, serial / esp-println |
+| `enclave_kernel/src/interrupts.rs` | IDT (x86), wake decode (C6) |
+| `enclave_kernel/src/shutdown.rs` | Wipe + platform sleep |
+| `aerospace_payload/src/lib.rs` | WASM diagnostic logic |
 
 ---
 
-*Aether Enclave — AGPL-3.0-or-later. Stateless by design.*
+*Aether Enclave — AGPL-3.0-or-later*

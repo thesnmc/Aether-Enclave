@@ -1,6 +1,7 @@
-//! ESP32-C6 flight hardware: UART0, I2C (BMP390 + ADS1115), WDT0, RTC deep sleep.
+//! ESP32-C6 board support: I2C sensors (BMP390 + ADS1115), watchdog, RTC deep sleep.
+//!
+//! Log output goes through the on-chip USB Serial/JTAG port (see esp-println in mmio.rs).
 
-use core::fmt::{self, Write};
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::time::Duration as CoreDuration;
 
@@ -15,14 +16,21 @@ use esp_hal::rtc_cntl::sleep::{
 use esp_hal::system::{self, SleepSource};
 use esp_hal::time::{Duration, Rate};
 use esp_hal::timer::timg::{MwdtStage, TimerGroup, Wdt};
-use esp_hal::uart::{Config as UartConfig, Uart};
 use esp_hal::Blocking;
 use spin::Mutex;
 
 use crate::interrupts::HardwareInterrupt;
 
-const BMP390_ADDR: u8 = 0x76;
-const ADS1115_ADDR: u8 = 0x48;
+/// Seconds until the RTC timer fires wake vector 0x21 (adjust for demo pacing).
+const WAKE_TIMER_SECS: u64 = 10;
+
+/// Watchdog timeout — must exceed worst-case wasmi compile + instantiate on device.
+const WDT_TIMEOUT_SECS: u64 = 30;
+
+const BMP390_ADDR_PRIMARY: u8 = 0x76;
+const BMP390_ADDR_SECONDARY: u8 = 0x77;
+const ADS1115_ADDR_PRIMARY: u8 = 0x48;
+const ADS1115_ADDR_SECONDARY: u8 = 0x49;
 
 const BMP390_REG_CHIP_ID: u8 = 0x00;
 const BMP390_REG_DATA: u8 = 0x04;
@@ -35,10 +43,22 @@ const BMP390_PWR_NORMAL: u8 = 0x30;
 
 const ADS1115_REG_CONVERSION: u8 = 0x00;
 const ADS1115_REG_CONFIG: u8 = 0x01;
-/// AIN0 vs GND, ±4.096 V, single-shot, 128 SPS, comparator disabled.
+/// AIN0 vs GND, ±4.096 V, single-shot, 128 SPS.
 const ADS1115_CFG_AIN0: u16 = 0xC583;
 
-/// Bosch BMP390 NVM calibration block (21 bytes @ 0x31).
+/// Which I2C devices responded during boot.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SensorHealth {
+    /// BMP390 barometer probed and calibrated.
+    pub bmp390: bool,
+    /// ADS1115 ADC probed and configured.
+    pub ads1115: bool,
+    /// BMP390 7-bit I2C address in use (0 if absent).
+    pub bmp390_addr: u8,
+    /// ADS1115 7-bit I2C address in use (0 if absent).
+    pub ads1115_addr: u8,
+}
+
 #[derive(Clone, Copy, Default)]
 struct Bmp390Calib {
     par_t1: u16,
@@ -59,17 +79,18 @@ struct Bmp390Calib {
 
 struct PlatformState {
     i2c: I2c<'static, Blocking>,
-    uart: Uart<'static, Blocking>,
     rtc: Rtc<'static>,
     wdt: Wdt<TIMG0<'static>>,
     wake_gpio: GPIO2<'static>,
     bmp_calib: Bmp390Calib,
+    bmp_addr: u8,
+    ads_addr: u8,
+    health: SensorHealth,
 }
 
 static PLATFORM: Mutex<Option<PlatformState>> = Mutex::new(None);
 static READY: AtomicBool = AtomicBool::new(false);
 
-/// Safely extract the platform state. 
 fn with_platform<F, R>(f: F) -> Option<R>
 where
     F: FnOnce(&mut PlatformState) -> R,
@@ -84,11 +105,13 @@ where
     }
 }
 
-/// Boot-time bring-up: WDT0, UART0, I2C @ 400 kHz, BMP390 + ADS1115 init, GPIO2 wake arm.
-pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
+/// Boot: watchdog, I2C @ 400 kHz, probe BMP390 + ADS1115, arm GPIO2 wake.
+///
+/// Missing sensors do not panic — reads fall back to 0 and boot continues.
+pub fn init(peripherals: esp_hal::peripherals::Peripherals) -> SensorHealth {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     let mut wdt = timg0.wdt;
-    wdt.set_timeout(MwdtStage::Stage0, Duration::from_secs(8));
+    wdt.set_timeout(MwdtStage::Stage0, Duration::from_secs(WDT_TIMEOUT_SECS));
     wdt.enable();
     wdt.feed();
 
@@ -100,52 +123,72 @@ pub fn init(peripherals: esp_hal::peripherals::Peripherals) {
     .with_sda(peripherals.GPIO8)
     .with_scl(peripherals.GPIO9);
 
-    let uart = Uart::new(
-        peripherals.UART0,
-        UartConfig::default().with_baudrate(115_200),
-    )
-    .expect("UART init")
-    .with_tx(peripherals.GPIO21)
-    .with_rx(peripherals.GPIO20);
-
     let mut wake_gpio = peripherals.GPIO2;
     let _ = esp_hal::gpio::Input::new(
         wake_gpio.reborrow(),
         InputConfig::default().with_pull(Pull::Down),
     );
 
-    let mut state = PlatformState {
+    let mut health = SensorHealth::default();
+    let mut bmp_calib = Bmp390Calib::default();
+    let mut bmp_addr = 0u8;
+    let mut ads_addr = 0u8;
+
+    let mut probe = PlatformState {
         i2c,
-        uart,
         rtc: Rtc::new(peripherals.LPWR),
         wdt,
         wake_gpio,
         bmp_calib: Bmp390Calib::default(),
+        bmp_addr: 0,
+        ads_addr: 0,
+        health: SensorHealth::default(),
     };
 
-    init_bmp390(&mut state).expect("BMP390 init");
-    init_ads1115(&mut state).expect("ADS1115 init");
+    for addr in [BMP390_ADDR_PRIMARY, BMP390_ADDR_SECONDARY] {
+        if init_bmp390(&mut probe, addr).is_ok() {
+            health.bmp390 = true;
+            health.bmp390_addr = addr;
+            bmp_addr = addr;
+            bmp_calib = probe.bmp_calib;
+            break;
+        }
+    }
 
-    *PLATFORM.lock() = Some(state);
+    for addr in [ADS1115_ADDR_PRIMARY, ADS1115_ADDR_SECONDARY] {
+        if init_ads1115(&mut probe, addr).is_ok() {
+            health.ads1115 = true;
+            health.ads1115_addr = addr;
+            ads_addr = addr;
+            break;
+        }
+    }
+
+    probe.bmp_calib = bmp_calib;
+    probe.bmp_addr = bmp_addr;
+    probe.ads_addr = ads_addr;
+    probe.health = health;
+
+    *PLATFORM.lock() = Some(probe);
     READY.store(true, Ordering::Release);
     feed_watchdog();
+
+    health
 }
 
-/// Kick WDT0 — required before guest runtime and during memory scrub loops.
+/// Last boot-time sensor probe result.
+pub fn sensor_health() -> SensorHealth {
+    with_platform(|state| state.health)
+        .unwrap_or_default()
+}
+
 pub fn feed_watchdog() {
     with_platform(|state| {
         state.wdt.feed();
     });
 }
 
-/// UART0 logging sink for [`crate::serial_println!`].
-pub fn serial_write_fmt(args: fmt::Arguments<'_>) {
-    with_platform(|state| {
-        let _ = state.uart.write_fmt(args);
-    });
-}
-
-/// Decode deep/light sleep wake cause into sovereign hardware vectors.
+/// Map RTC wake cause to the same vector IDs used on x86 (0x20 / 0x21).
 pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
     match system::wakeup_cause() {
         SleepSource::Timer => Some(HardwareInterrupt::KineticJointActuation),
@@ -156,9 +199,11 @@ pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
     }
 }
 
-/// Read barometric pressure (atm) from BMP390 over the locked I2C bus.
 pub fn read_bmp390_pressure() -> f32 {
     with_platform(|state| {
+        if !state.health.bmp390 || state.bmp_addr == 0 {
+            return 0.0;
+        }
         state.wdt.feed();
         match read_bmp390_pressure_inner(state) {
             Ok(p) => p,
@@ -168,9 +213,11 @@ pub fn read_bmp390_pressure() -> f32 {
     .unwrap_or(0.0)
 }
 
-/// Read radiation front-end counts from ADS1115 AIN0.
 pub fn read_ads1115_dose() -> u32 {
     with_platform(|state| {
+        if !state.health.ads1115 || state.ads_addr == 0 {
+            return 0;
+        }
         state.wdt.feed();
         match read_ads1115_inner(state) {
             Ok(v) => v,
@@ -180,28 +227,26 @@ pub fn read_ads1115_dose() -> u32 {
     .unwrap_or(0)
 }
 
-/// Hybrid RTC deep sleep: 10 s timer heartbeat + GPIO2 active-high wake.
+/// Deep sleep until GPIO2 goes high or the timer fires, then CPU resets and boots again.
 pub fn request_deep_sleep() -> ! {
     feed_watchdog();
-    
-    // Extract the state completely so we can safely pass mutable pin references to the sleep config
+
     let mut guard = PLATFORM.lock();
     if let Some(mut state) = guard.take() {
         state.wdt.feed();
 
         let delay = Delay::new();
-        let timer = TimerWakeupSource::new(CoreDuration::from_secs(10));
+        let timer = TimerWakeupSource::new(CoreDuration::from_secs(WAKE_TIMER_SECS));
         let wakeup_pins: &mut [(&mut dyn RtcPinWithResistors, WakeupLevel)] =
             &mut [(&mut state.wake_gpio, WakeupLevel::High)];
-            
+
         let ext1_wake = Ext1WakeupSource::new(wakeup_pins);
         let config = RtcSleepConfig::deep();
-        
+
         delay.delay_millis(100);
         state.rtc.sleep(&config, &[&timer as &dyn WakeSource, &ext1_wake as &dyn WakeSource]);
     }
-    
-    // Fallback infinite hardware trap if sleep fails or platform isn't initialized
+
     loop {}
 }
 
@@ -221,38 +266,38 @@ fn i2c_write_read(
         .map_err(|_| ())
 }
 
-fn init_bmp390(state: &mut PlatformState) -> Result<(), ()> {
+fn init_bmp390(state: &mut PlatformState, addr: u8) -> Result<(), ()> {
     let mut id = [0u8];
-    i2c_write_read(state, BMP390_ADDR, &[BMP390_REG_CHIP_ID], &mut id)?;
+    i2c_write_read(state, addr, &[BMP390_REG_CHIP_ID], &mut id)?;
     if id[0] != BMP390_CHIP_ID {
         return Err(());
     }
 
-    i2c_write(state, BMP390_ADDR, &[BMP390_REG_CMD, BMP390_SOFT_RESET])?;
-    Delay::new().delay_millis(50);
+    i2c_write(state, addr, &[BMP390_REG_CMD, BMP390_SOFT_RESET])?;
+    Delay::new().delay_millis(100);
 
-    i2c_write(
-        state,
-        BMP390_ADDR,
-        &[BMP390_REG_PWR_CTRL, BMP390_PWR_NORMAL],
-    )?;
+    i2c_write(state, addr, &[BMP390_REG_PWR_CTRL, BMP390_PWR_NORMAL])?;
+    Delay::new().delay_millis(20);
 
     let mut nvm = [0u8; 21];
-    i2c_write_read(state, BMP390_ADDR, &[BMP390_REG_CALIB], &mut nvm)?;
+    i2c_write_read(state, addr, &[BMP390_REG_CALIB], &mut nvm)?;
     state.bmp_calib = parse_bmp390_calib(&nvm);
+    state.bmp_addr = addr;
     Ok(())
 }
 
-fn init_ads1115(state: &mut PlatformState) -> Result<(), ()> {
+fn init_ads1115(state: &mut PlatformState, addr: u8) -> Result<(), ()> {
     let cfg = ADS1115_CFG_AIN0;
     let buf = [ADS1115_REG_CONFIG, (cfg >> 8) as u8, (cfg & 0xFF) as u8];
-    i2c_write(state, ADS1115_ADDR, &buf)?;
+    i2c_write(state, addr, &buf)?;
+    state.ads_addr = addr;
     Ok(())
 }
 
 fn read_bmp390_pressure_inner(state: &mut PlatformState) -> Result<f32, ()> {
+    let addr = state.bmp_addr;
     let mut raw = [0u8; 6];
-    i2c_write_read(state, BMP390_ADDR, &[BMP390_REG_DATA], &mut raw)?;
+    i2c_write_read(state, addr, &[BMP390_REG_DATA], &mut raw)?;
 
     let press_raw = u32::from(raw[0]) | (u32::from(raw[1]) << 8) | (u32::from(raw[2]) << 16);
     let temp_raw = u32::from(raw[3]) | (u32::from(raw[4]) << 8) | (u32::from(raw[5]) << 16);
@@ -265,10 +310,11 @@ fn read_bmp390_pressure_inner(state: &mut PlatformState) -> Result<f32, ()> {
 }
 
 fn read_ads1115_inner(state: &mut PlatformState) -> Result<u32, ()> {
+    let addr = state.ads_addr;
     let cfg = ADS1115_CFG_AIN0 | 0x8000;
     i2c_write(
         state,
-        ADS1115_ADDR,
+        addr,
         &[
             ADS1115_REG_CONFIG,
             (cfg >> 8) as u8,
@@ -278,7 +324,7 @@ fn read_ads1115_inner(state: &mut PlatformState) -> Result<u32, ()> {
     Delay::new().delay_millis(10);
 
     let mut conv = [0u8; 2];
-    i2c_write_read(state, ADS1115_ADDR, &[ADS1115_REG_CONVERSION], &mut conv)?;
+    i2c_write_read(state, addr, &[ADS1115_REG_CONVERSION], &mut conv)?;
     let raw = i16::from_be_bytes(conv);
     Ok(raw.unsigned_abs() as u32)
 }

@@ -18,7 +18,7 @@ pub struct ShutdownReport {
 /// Execute post-run annihilation: scrub sandbox/arena, flush registers, PMU dormancy.
 pub fn self_annihilate(report: ShutdownReport) -> ! {
     serial_println!(
-        "[AETHER] cycle success — guest={} proof=0x{:016X} vector=0x{:02X} — self-annihilation",
+        "[AETHER] cycle done — guest={} proof=0x{:016X} vector=0x{:02X} — wiping memory",
         report.guest_result,
         report.proof,
         report.vector
@@ -90,7 +90,7 @@ fn enter_absolute_halt() -> ! {
 
     #[cfg(target_arch = "riscv32")]
     {
-        crate::platform::esp32c3::request_deep_sleep();
+        crate::platform::esp32c6::request_deep_sleep();
     }
 
     #[cfg(not(any(target_arch = "x86_64", target_arch = "riscv32")))]

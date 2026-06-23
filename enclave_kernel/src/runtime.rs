@@ -125,7 +125,7 @@ fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
 /// ISR / bootstrap entry — full micro-cycle without scheduler involvement.
 pub fn sovereign_bootstrap(trigger: Option<HardwareInterrupt>) {
     #[cfg(target_arch = "riscv32")]
-    crate::platform::esp32c3::feed_watchdog();
+    crate::platform::esp32c6::feed_watchdog();
 
     memory::reset_arena();
 
@@ -221,10 +221,17 @@ impl AetherHost {
 
         let module = Module::new(&engine, wasm_payload::WASM_BYTES)?;
 
+        #[cfg(target_arch = "riscv32")]
+        crate::platform::esp32c6::feed_watchdog();
+
         let mut linker = Linker::new(&engine);
         link_aether_host(&mut linker)?;
 
         let instance_pre = linker.instantiate(&mut store, &module)?;
+
+        #[cfg(target_arch = "riscv32")]
+        crate::platform::esp32c6::feed_watchdog();
+
         let instance = instance_pre.ensure_no_start(&mut store)?;
 
         cap_guest_memory(&mut store, &instance)?;
