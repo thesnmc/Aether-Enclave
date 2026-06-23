@@ -1,6 +1,6 @@
 //! ESP32-C6 board support: I2C sensors (BMP390 + ADS1115), watchdog, RTC deep sleep.
 //!
-//! I2C uses GPIO6/7 so GPIO8 stays free for the DevKit onboard RGB LED.
+//! I2C on GPIO6/7 (avoids DevKitC onboard LED on GPIO8). WeAct C6-A-N4: same map.
 //! Optional status LED: GPIO10 → 330 Ω → LED → GND.
 
 use core::sync::atomic::{AtomicBool, Ordering};
@@ -225,6 +225,7 @@ fn detect_demo_hold_on_pin(gpio2: &mut GPIO2<'_>) -> bool {
         if button.is_high() {
             seen_high += 1;
         }
+        feed_watchdog();
         Delay::new().delay_millis(10);
     }
     seen_high >= (DEMO_HOLD_MS / 10)
@@ -235,6 +236,7 @@ pub fn apply_pot_mission_profile() {
     let raw = read_ads1115_raw_avg();
     rtc_state::set_wake_timer_from_pot(raw);
     rtc_state::set_dose_sensitivity(raw);
+    crate::platform::mission_profile::apply_pot_payload_override(raw);
 }
 
 pub fn feed_watchdog() {
@@ -267,17 +269,36 @@ pub fn detect_wake_trigger() -> Option<HardwareInterrupt> {
     }
 }
 
-/// True when pressure fell sharply since the last sleep (leak / blow-on-sensor demo).
-pub fn pressure_drop_wake() -> bool {
+/// Pressure-based wake reason (one sensor sample per check).
+pub fn pressure_wake_label() -> Option<&'static str> {
+    use esp_hal::time::Instant;
+
     let sample = read_env_sample();
     if sample.pressure_atm <= 0.0 {
-        return false;
+        return None;
     }
     let last = f32::from_bits(rtc_state::last_pressure_bits());
     if last <= 0.0 {
-        return false;
+        return None;
     }
-    last - sample.pressure_atm >= PRESSURE_DROP_ATM
+
+    let last_ms = rtc_state::last_cycle_ms();
+    if last_ms != 0 {
+        let now_ms = Instant::now().duration_since_epoch().as_millis() as u32;
+        let dt_ms = now_ms.wrapping_sub(last_ms);
+        if dt_ms >= 1_000 {
+            let rate = (last - sample.pressure_atm) / (dt_ms as f32 / 1_000.0);
+            if rate >= crate::platform::mission_profile::leak_rate_atm_s() {
+                return Some("rapid leak");
+            }
+        }
+    }
+
+    if last - sample.pressure_atm >= PRESSURE_DROP_ATM {
+        return Some("pressure drop");
+    }
+
+    None
 }
 
 pub fn read_bmp390_pressure() -> f32 {

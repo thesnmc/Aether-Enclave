@@ -12,6 +12,7 @@ pub mod memory;
 pub mod mmio;
 #[cfg(target_arch = "riscv32")]
 pub mod platform;
+pub mod proof;
 pub mod runtime;
 pub mod shutdown;
 pub mod wasm_payload;

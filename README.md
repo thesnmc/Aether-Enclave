@@ -2,83 +2,113 @@
 
 [![License: AGPL-3.0-or-later](https://img.shields.io/badge/License-AGPL--3.0--or--later-blue.svg)](LICENSE)
 
-A small bare-metal computer program (no Linux, no Wi-Fi) that runs a WebAssembly health-check module when sensors or a timer wake it up. It writes a proof hash, wipes its RAM, and goes back to sleep.
+Bare-metal firmware for the **ESP32-C6** (no Linux, no Wi‑Fi). On each wake it runs a small WebAssembly check against pressure and a dose channel, writes a chained proof hash to serial / OLED / optional SD card, wipes RAM, and sleeps again.
 
-Built for a **defence expo demo** in India on the **ESP32-C6** (RISC-V). A QEMU/x86 build is included for bench testing without hardware.
+Built as a **table demo** for defence expos in India. A QEMU/x86 target is included for bench testing without hardware.
 
-**Read next:** [ARCHITECTURE.md](ARCHITECTURE.md) · [ROADMAP.md](ROADMAP.md)
-
----
-
-## What you see at the demo
-
-1. Board powers on → serial log + OLED shows `AETHER ENCLAVE` / sensor status.
-2. WASM module runs → reads pressure (BMP390) and dose channel (ADS1115 + pot).
-3. Screen and serial show **cycle number**, **alert flags**, and **64-bit proof hash**.
-4. OLED shows cycle / flags / proof; **microSD** stores the same proof every wake (part of the standard kit).
-5. RAM is cleared → board sleeps until button press or timer (pot sets 5–60 s).
-6. **Demo mode:** hold GPIO2 at power-on → cycles repeat every 2 s for live audience.
-
-No cloud. No phone app. One USB-C cable for flash and logs.
+**Also read:** [ARCHITECTURE.md](ARCHITECTURE.md) · [ROADMAP.md](ROADMAP.md) · [EVALUATOR_TEST.md](EVALUATOR_TEST.md)
 
 ---
 
-## Why ESP32-C6 (not classic ESP32)
-
-| | Classic ESP32 | ESP32-C6 (this project) |
-|---|---------------|-------------------------|
-| CPU | Xtensa — custom Rust toolchain | RISC-V — standard open toolchain |
-| Debug | Extra UART chip or JTAG probe | USB-C built in (flash + serial) |
-| Cost | Similar | DevKit ~₹700–1,200 |
-
-This firmware does **not** use Wi-Fi, Bluetooth, or mesh radio.
-
----
-
-## One mission cycle
+## What it does
 
 ```text
-Sleep → Wake → Run WASM → Write proof → Wipe RAM → Sleep
+Sleep → Wake → Run WASM → Log proof → Wipe RAM → Sleep
 ```
 
-| Step | What happens |
-|------|----------------|
-| Sleep | Deep sleep; timer length set by pot at boot |
-| Wake | Button (vector 0x20), timer (0x21), or pressure drop on BMP390 |
-| WASM | `aerospace_payload` checks limits via host sensor calls |
-| Proof | 64-bit hash to serial + OLED + microSD |
-| Wipe | Host arena zeroed; guest store dropped |
+| Output | What you get |
+|--------|----------------|
+| USB serial | Human lines + one JSON line per cycle |
+| OLED | Cycle number, flags, proof hash |
+| microSD (optional) | Raw sectors — profile at 2047, proof log from 2048 |
+
+**Demo mode:** hold the wake button at power-on → cycles every 2 s (no sleep between runs).
+
+**What it is not:** flight hardware, a certified dosimeter, or a networked product. The pot stands in for a radiation front-end at the demo; see [ROADMAP.md](ROADMAP.md) for the path to real sensors and a PCB.
 
 ---
 
-## Hardware (DefExpo breadboard)
+## Parts list (breadboard kit)
 
-| ESP32-C6 pin | Connect to |
-|--------------|------------|
-| 3.3V, GND | BMP390, ADS1115, OLED, microSD (shared) |
-| **GPIO6** | I2C SDA (all I2C devices) |
-| **GPIO7** | I2C SCL |
-| GPIO2 | Button → 3.3V (wake; hold at boot = demo mode) |
-| GPIO10 | Optional LED → 330 Ω → GND |
-| **GPIO3** | SD MOSI |
-| **GPIO4** | SD MISO |
-| **GPIO5** | SD SCK |
-| **GPIO15** | SD CS |
-| ADS1115 AIN0 | Pot wiper (ends on 3.3V and GND) |
+| Part | Notes |
+|------|--------|
+| WeAct **ESP32-C6-A-N4** (or Espressif DevKitC-1) | Flash via **native USB** port (not a UART-only cable) |
+| DFRobot **BMP390L** (or BMP390) breakout | Pressure, I2C |
+| **ADS1115** breakout | 16-bit ADC, I2C; AIN0 = pot / future sensor |
+| **SSD1306** 128×64 OLED, **4-pin I2C** | VCC, GND, SDA, SCL |
+| **OPEN-SMART** (or similar) microSD SPI module | 3.3 V only |
+| microSD card | Dedicated card for logging (not your main storage) |
+| 10 kΩ potentiometer | Demo dose + wake timer tuning |
+| Tactile button | Wake + demo-mode hold |
+| Breadboard, jumper wires | |
+| Optional: LED + 330 Ω | Status on GPIO10 |
+| USB **A→C data** cable | Must carry data, not charge-only |
 
-**I2C addresses:** BMP390 `0x76`, ADS1115 `0x48`, SSD1306 OLED `0x3C`.
+Typical parts cost **under ₹4,000**; full kit with spares stays **under ₹10,000**.
 
-GPIO8 on the DevKit is the onboard RGB LED — sensor I2C uses GPIO6/7 to avoid a pin clash.
+---
 
-**Demo kit (under ₹10,000 parts):** ESP32-C6-DevKitC-1, BMP390, ADS1115, SSD1306 OLED, microSD SPI module + dedicated card, breadboard, wires, button, 10 kΩ pot, optional LED + 330 Ω, USB-C cable. No booth or stall rental — table demo with USB power and a laptop.
+## Wiring guide
 
-**iDEX Open path:** see [ROADMAP.md](ROADMAP.md) — two-person team, up to ₹1.5 Cr grant plan (mostly engineering time).
+Power everything from the board **3.3 V** and **GND** rails. Do not use 5 V on these breakouts.
+
+### Pin map (firmware)
+
+| ESP32-C6 GPIO | Connect to |
+|---------------|------------|
+| **3.3V** | VCC on BMP390, ADS1115, OLED, SD module |
+| **GND** | GND on all modules (common ground) |
+| **GPIO6** | I2C **SDA** (shared bus) |
+| **GPIO7** | I2C **SCL** (shared bus) |
+| **GPIO2** | One side of **button** → other side of button to **3.3V** |
+| **GPIO3** | SD **MOSI** |
+| **GPIO4** | SD **MISO** |
+| **GPIO5** | SD **SCK** |
+| **GPIO15** | SD **CS** |
+| **GPIO10** | Optional LED → 330 Ω → GND |
+| ADS1115 **AIN0** | Pot **wiper** |
+| Pot ends | **3.3V** and **GND** |
+
+**I2C addresses (fixed in firmware):** BMP390 `0x76`, ADS1115 `0x48`, OLED `0x3C`.
+
+GPIO6/7 are used so DevKitC onboard LED on GPIO8 does not share the sensor bus. WeAct boards have no conflict on those pins.
+
+### Step-by-step
+
+1. **Power rails** — Board 3.3V and GND to breadboard + and − rails.
+2. **I2C bus** — Daisy-chain SDA and SCL on BMP390, ADS1115, and OLED. Add short wires; keep leads under ~20 cm if reads are noisy.
+3. **Pot** — Outer pins to 3.3V and GND; wiper to ADS1115 AIN0 only.
+4. **Button** — GPIO2 to one leg; other leg to 3.3V. Firmware uses internal pull-**down** on GPIO2. **Do not** wire the button to GND.
+5. **SD module** — 3.3V, GND, MOSI/MISO/SCK/CS as in the table. Insert card after power is stable if your module lacks a regulator.
+6. **USB** — Plug into the board’s USB port labelled for **USB** / **native** (WeAct: use the USB port on the module, not a separate UART adapter).
+
+```text
+                    ┌─────────────────┐
+    3.3V ───────────┤ 3.3V            │
+    GND  ───────────┤ GND             │
+    GPIO6 ──────────┤ SDA ────┬───────┼── BMP390, ADS1115, OLED (I2C)
+    GPIO7 ──────────┤ SCL ────┘       │
+    GPIO2 ──[btn]── 3.3V              │
+    GPIO3/4/5/15 ───┤ SPI ────────────┼── microSD module
+                    │  ESP32-C6       │
+                    └─────────────────┘
+```
+
+### First power-on
+
+Flash firmware (below), open serial monitor, expect:
+
+```text
+[AETHER] sensors — BMP390: OK  ADS1115: OK  OLED: OK  SD: OK
+```
+
+`MISSING` on a line means that device did not answer on I2C or SPI — check power, SDA/SCL swap, or loose wire. The demo still runs without OLED or SD.
 
 ---
 
 ## Build and flash
 
-### Setup (once)
+### One-time setup
 
 ```bash
 cargo install espflash ldproxy
@@ -86,39 +116,49 @@ espup install
 rustup target add riscv32imac-unknown-none-elf
 ```
 
-Toolchain: [`enclave_kernel/rust-toolchain.esp32c6.toml`](enclave_kernel/rust-toolchain.esp32c6.toml) (`channel = "esp"`).
+Toolchain file: [`enclave_kernel/rust-toolchain.esp32c6.toml`](enclave_kernel/rust-toolchain.esp32c6.toml) (`channel = "esp"`).
 
 ### Flash
 
-From `enclave_kernel/`:
-
 ```bash
+cd enclave_kernel
 cargo +esp build --release
 cargo +esp run --release
 ```
 
-Use the DevKit **USB** port (Serial/JTAG). No external debugger.
-
-### Demo controls
+### Controls
 
 | Action | Result |
 |--------|--------|
-| Normal boot | Self-test cycle, then sleep |
-| Hold GPIO2 at boot | Demo mode — cycle every 2 s |
-| Press button after sleep | Wake vector 0x20 |
-| Turn pot | Changes dose sensitivity and sleep timer |
-| Blow on BMP390 | Pressure-drop wake |
+| Normal boot | One WASM cycle, then deep sleep |
+| Hold GPIO2 at boot | Demo loop, ~2 s between cycles |
+| Press button after sleep | Wake (vector 0x20) |
+| Turn pot at boot | Wake timer 5–60 s; dose scaling |
+| Pot > ~75% at boot | **RELAXED** WASM slot (looser limits) |
+| Pot low at boot | **STRICT** slot |
+| Blow on BMP390 | Pressure-drop or rapid-leak wake |
 
-### Sample serial output
+Default limits: pressure **0.15 atm**, dose **1000** (ADC scaled by pot). SD profile on sector 2047 overrides limits — see tools below.
 
-```text
-[AETHER] ESP32-C6 cold boot — USB Serial/JTAG ready
-[AETHER] sensors — BMP390: OK (0x76)  ADS1115: OK (0x48)  OLED: OK  SD: OK
-[AETHER] === MISSION READY ===
-[AETHER] cycle #1 — guest=0 (OK) proof=0x........ vector=0x20 (PRESSURE) proof_changed=true
-{"cycle":1,"guest":0,"flags":"OK","proof":"0x........",...}
-[AETHER] SD — cycle #1 logged
+---
+
+## microSD layout (optional)
+
+| Sector | Content |
+|--------|---------|
+| 2047 | Mission profile (`AEPR`) — limits, wake bounds, strict/relaxed slot |
+| 2048 | Log metadata (`AETH`) |
+| 2049+ | One 512-byte record per cycle (`AEC1`) |
+
+No FAT filesystem. On Linux use `/dev/sdb` (unmount first); on Windows `\\.\PhysicalDriveN` as admin.
+
+```bash
+python tools/sd_export.py /dev/sdb
+python tools/verify_log.py serial_or_export.txt
+python tools/write_mission_profile.py /dev/sdb --mission-id 1 --payload relaxed
 ```
+
+Evaluator checklist: [EVALUATOR_TEST.md](EVALUATOR_TEST.md).
 
 ---
 
@@ -134,30 +174,19 @@ cargo +nightly run -p enclave_kernel --target x86_64-unknown-none \
   -Z build-std-features=compiler-builtins-mem
 ```
 
-Success exits with code **33** (see ARCHITECTURE.md).
+Success exits QEMU with code **33**.
 
 ---
 
-## Workspace
+## Repo layout
 
-| Crate | Role |
-|-------|------|
-| `enclave_kernel` | Bare-metal host (ESP32-C6 or QEMU) |
+| Crate / path | Role |
+|--------------|------|
+| `enclave_kernel` | Rust host — ESP32-C6 or QEMU |
 | `aerospace_payload` | WASM guest (`evaluate_limits`) |
+| `tools/` | SD export, proof verify, profile writer |
 
-Guest imports module `"aether"`: `read_atmospheric_pressure`, `read_radiation_dosimeter`, `commit_telemetry_vector`.
-
-Pressure limit: **0.15 atm**. Dose limit: **1000** (host scales ADC via pot).
-
----
-
-## microSD proof log
-
-SPI module on **GPIO3/4/5/15** — **included in the standard kit** (same order as the OLED). Boot prints `SD: OK` or `SD: MISSING`; demo still runs if the card or module is absent.
-
-Each cycle writes one 512-byte sector starting at block 2048 (raw log — use our export script or a disk tool until FAT lands). Use a **dedicated card**, not your phone backup.
-
-See [ROADMAP.md](ROADMAP.md) for the iDEX Open product plan.
+Guest imports (`"aether"`): `read_atmospheric_pressure`, `read_radiation_dosimeter`, `read_pressure_limit`, `read_dose_limit`, `commit_telemetry_vector`.
 
 ---
 

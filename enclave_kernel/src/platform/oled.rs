@@ -119,7 +119,7 @@ pub fn init() -> bool {
     false
 }
 
-pub fn is_ready() -> bool {
+fn is_ready() -> bool {
     READY.load(Ordering::Acquire)
 }
 
@@ -129,12 +129,13 @@ pub fn show_boot(sensors_ok: bool) {
     }
     let _ = clear();
     let _ = draw_str(0, 0, "AETHER ENCLAVE");
-    let _ = draw_str(0, 2, if sensors_ok { "SENSORS OK" } else { "SENSOR FAULT" });
-    let _ = draw_str(0, 4, "DEFEXPO DEMO");
+    let _ = draw_str(0, 2, if sensors_ok { "SENSOR THEEK" } else { "SENSOR FAULT" });
+    let _ = draw_str(0, 4, "DEFEXPO / iDEX");
+    let _ = draw_str(0, 6, if sensors_ok { "READY / TAIYAR" } else { "DEGRADED MODE" });
     Delay::new().delay_millis(5);
 }
 
-pub fn show_cycle(cycle: u32, guest: i32, proof: u64, vector: u8) {
+pub fn show_cycle(cycle: u32, guest: i32, proof: u64, vector: u8, chain_linked: bool) {
     if !is_ready() {
         return;
     }
@@ -142,7 +143,7 @@ pub fn show_cycle(cycle: u32, guest: i32, proof: u64, vector: u8) {
 
     let mut num = [b' '; 6];
     format_dec(&mut num, cycle);
-    let mut line1 = [0u8; 12];
+    let mut line1 = [0u8; 14];
     line1[..6].copy_from_slice(b"CYCLE ");
     line1[6..12].copy_from_slice(&num);
     let _ = draw_str(0, 0, core::str::from_utf8(&line1).unwrap_or("CYCLE"));
@@ -151,9 +152,11 @@ pub fn show_cycle(cycle: u32, guest: i32, proof: u64, vector: u8) {
 
     let mut lo = [0u8; 8];
     format_hex8(&mut lo, proof as u32);
-    let mut line3 = [0u8; 13];
+    let mut line3 = [0u8; 16];
     line3[..5].copy_from_slice(b"PRF L");
     line3[5..13].copy_from_slice(&lo);
+    let chain = if chain_linked { "LNK" } else { "RPT" };
+    line3[13..16].copy_from_slice(chain.as_bytes());
     let _ = draw_str(0, 4, core::str::from_utf8(&line3).unwrap_or("PRF"));
 
     let mut hi = [0u8; 8];

@@ -1,11 +1,9 @@
 //! WebAssembly payload — pressure + dose limit check for the enclave host.
+//! Limits are read from the host (mission profile / SD); defaults match strict mode.
 
 #![no_std]
 
 pub const HOST_IMPORT_MODULE: &str = "aether";
-
-pub const PRESSURE_LIMIT_ATM: f32 = 0.15;
-pub const DOSE_LIMIT: u32 = 1_000;
 
 pub const STATUS_OK: i32 = 0;
 pub const STATUS_PRESSURE_LOW: i32 = 0x1;
@@ -31,6 +29,8 @@ fn panic(_info: &core::panic::PanicInfo) -> ! {
 extern "C" {
     fn read_atmospheric_pressure() -> f32;
     fn read_radiation_dosimeter() -> i32;
+    fn read_pressure_limit() -> f32;
+    fn read_dose_limit() -> i32;
     fn commit_telemetry_vector(ptr: i32, len: i32);
 }
 
@@ -38,12 +38,14 @@ extern "C" {
 pub extern "C" fn evaluate_limits() -> i32 {
     let pressure = unsafe { read_atmospheric_pressure() };
     let dose = unsafe { read_radiation_dosimeter() } as u32;
+    let p_lim = unsafe { read_pressure_limit() };
+    let d_lim = unsafe { read_dose_limit() } as u32;
 
     let mut flags = STATUS_OK;
-    if pressure < PRESSURE_LIMIT_ATM {
+    if pressure < p_lim {
         flags |= STATUS_PRESSURE_LOW;
     }
-    if dose > DOSE_LIMIT {
+    if dose > d_lim {
         flags |= STATUS_DOSE_HIGH;
     }
 

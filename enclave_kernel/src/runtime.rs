@@ -1,4 +1,4 @@
-//! wasmi host — loads embedded WASM, runs `evaluate_limits`, commits proof.
+//! wasmi host — loads embedded WASM, runs `evaluate_limits`, commits chained proof.
 
 use wasmi::{
     Caller, Config, Engine, Error, Extern, Instance, Linker, Memory, MemoryType, Module, Store,
@@ -10,6 +10,7 @@ use wasmi_core::F32;
 use crate::interrupts::{self, HardwareInterrupt};
 use crate::memory::{self, SANDBOX_MEMORY_SIZE, WASM_PAGE_SIZE};
 use crate::mmio;
+use crate::proof;
 use crate::serial_println;
 use crate::shutdown::{self, ShutdownReport};
 use crate::wasm_payload;
@@ -35,6 +36,22 @@ impl HostCalls {
         let dose = mmio::read_radiation_dosimeter();
         caller.data_mut().last_dose = dose;
         dose as i32
+    }
+
+    fn read_pressure_limit(_caller: Caller<'_, HostState>) -> F32 {
+        #[cfg(target_arch = "riscv32")]
+        let limit = crate::platform::mission_profile::pressure_limit_atm();
+        #[cfg(not(target_arch = "riscv32"))]
+        let limit = 0.15f32;
+        F32::from_bits(limit.to_bits())
+    }
+
+    fn read_dose_limit(_caller: Caller<'_, HostState>) -> i32 {
+        #[cfg(target_arch = "riscv32")]
+        let limit = crate::platform::mission_profile::dose_limit();
+        #[cfg(not(target_arch = "riscv32"))]
+        let limit = 1_000u32;
+        limit as i32
     }
 
     fn commit_telemetry_vector(caller: Caller<'_, HostState>, ptr: i32, len: i32) {
@@ -87,6 +104,20 @@ fn link_aether_host(linker: &mut Linker<HostState>) -> Result<(), Error> {
     linker
         .func_wrap(
             HOST_IMPORT_MODULE,
+            "read_pressure_limit",
+            HostCalls::read_pressure_limit,
+        )
+        .map_err(Error::from)?;
+    linker
+        .func_wrap(
+            HOST_IMPORT_MODULE,
+            "read_dose_limit",
+            HostCalls::read_dose_limit,
+        )
+        .map_err(Error::from)?;
+    linker
+        .func_wrap(
+            HOST_IMPORT_MODULE,
             "commit_telemetry_vector",
             HostCalls::commit_telemetry_vector,
         )
@@ -99,9 +130,12 @@ pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
     {
         crate::platform::esp32c6::feed_watchdog();
         crate::platform::esp32c6::status_led_on();
+        crate::platform::power_log::mark_cycle_start();
     }
 
     memory::reset_arena();
+
+    let vector = trigger.map(|t| t as u8).unwrap_or(interrupts::last_vector());
 
     let mut host = match AetherHost::instantiate() {
         Ok(h) => h,
@@ -121,12 +155,12 @@ pub fn run_mission_cycle(trigger: Option<HardwareInterrupt>) {
         }
     };
 
-    let proof = host.commit_outcome(guest_result);
+    let proof = host.commit_outcome(guest_result, vector);
 
     shutdown::finish_cycle(ShutdownReport {
         guest_result,
         proof,
-        vector: trigger.map(|t| t as u8).unwrap_or(interrupts::last_vector()),
+        vector,
     });
 }
 
@@ -182,7 +216,12 @@ impl AetherHost {
             },
         );
 
-        let module = Module::new(&engine, wasm_payload::WASM_BYTES)?;
+        #[cfg(target_arch = "riscv32")]
+        let wasm_bytes = wasm_payload::wasm_bytes_for_slot(crate::platform::mission_profile::payload_slot());
+        #[cfg(not(target_arch = "riscv32"))]
+        let wasm_bytes = wasm_payload::wasm_bytes_for_slot(0);
+
+        let module = Module::new(&engine, wasm_bytes)?;
 
         #[cfg(target_arch = "riscv32")]
         crate::platform::esp32c6::feed_watchdog();
@@ -212,13 +251,37 @@ impl AetherHost {
         Ok(result)
     }
 
-    pub fn commit_outcome(&self, guest_result: i32) -> u64 {
+    pub fn commit_outcome(&self, guest_result: i32, vector: u8) -> u64 {
         let state = self.store.data();
-        let proof_lo = (guest_result as u32) ^ state.last_dose;
-        let proof_hi = state.last_dose.rotate_left(9)
-            ^ f32::to_bits(state.last_pressure)
-            ^ 0xA17E_0001;
-        mmio::commit_proof(proof_lo, proof_hi)
+        let pressure_bits = state.last_pressure.to_bits();
+
+        #[cfg(target_arch = "riscv32")]
+        {
+            let prev = crate::platform::rtc_state::last_proof();
+            let cycle = crate::platform::rtc_state::cycle_count().saturating_add(1);
+            let mission_id = crate::platform::mission_profile::mission_id();
+            let slot = crate::platform::mission_profile::payload_slot();
+            let proof = proof::chain_proof(
+                prev,
+                guest_result,
+                pressure_bits,
+                state.last_dose,
+                vector,
+                cycle,
+                mission_id,
+                slot,
+            );
+            return mmio::commit_proof(proof as u32, (proof >> 32) as u32);
+        }
+
+        #[cfg(not(target_arch = "riscv32"))]
+        {
+            let proof_lo = (guest_result as u32) ^ state.last_dose;
+            let proof_hi = state.last_dose.rotate_left(9)
+                ^ pressure_bits
+                ^ 0xA17E_0001;
+            mmio::commit_proof(proof_lo, proof_hi)
+        }
     }
 }
 

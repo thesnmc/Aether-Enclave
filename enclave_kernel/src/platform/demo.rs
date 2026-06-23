@@ -43,10 +43,10 @@ pub fn trigger_label(t: Option<HardwareInterrupt>) -> &'static str {
 /// Short status labels for the 128×64 OLED (5×7 font width).
 pub fn guest_flags_oled(flags: i32) -> &'static str {
     match flags {
-        0 => "STATUS OK",
-        1 => "PRESS LOW",
+        0 => "OK / THEEK",
+        1 => "CHAP LOW",
         2 => "DOSE HIGH",
-        3 => "BOTH ALERT",
+        3 => "DONO ALERT",
         _ => "FAULT",
     }
 }
@@ -56,23 +56,32 @@ pub fn log_json_cycle(
     cycle: u32,
     guest: i32,
     proof: u64,
+    prev_proof: u64,
     vector: u8,
     pressure: f32,
     temp_c: f32,
     dose: u32,
     proof_changed: bool,
+    mission_id: u32,
+    payload_slot: u8,
+    active_ms: u32,
 ) {
+    let payload = super::mission_profile::payload_name(payload_slot);
     crate::serial_println!(
-        "{{\"cycle\":{},\"guest\":{},\"flags\":\"{}\",\"proof\":\"0x{:016X}\",\"vector\":\"0x{:02X}\",\"pressure\":{:.3},\"temp_c\":{:.1},\"dose\":{},\"proof_changed\":{}}}",
+        "{{\"cycle\":{},\"guest\":{},\"flags\":\"{}\",\"proof\":\"0x{:016X}\",\"prev_proof\":\"0x{:016X}\",\"vector\":\"0x{:02X}\",\"pressure\":{:.3},\"temp_c\":{:.1},\"dose\":{},\"proof_changed\":{},\"mission_id\":{},\"payload\":\"{}\",\"active_ms\":{}}}",
         cycle,
         guest,
         guest_flags_text(guest),
         proof,
+        prev_proof,
         vector,
         pressure,
         temp_c,
         dose,
         proof_changed,
+        mission_id,
+        payload,
+        active_ms,
     );
 }
 
@@ -81,7 +90,6 @@ pub fn altitude_m(pressure_atm: f32) -> f32 {
     if pressure_atm <= 0.0 {
         return 0.0;
     }
-    // ISA barometric formula (approximate, good enough for demo).
     let p = pressure_atm as f64;
     (44330.0 * (1.0 - libm::pow(p, 0.1903))) as f32
 }

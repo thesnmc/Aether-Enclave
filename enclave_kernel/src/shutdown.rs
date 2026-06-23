@@ -19,49 +19,73 @@ pub struct ShutdownReport {
 pub fn finish_cycle(report: ShutdownReport) {
     #[cfg(target_arch = "riscv32")]
     {
-        use crate::platform::{demo, esp32c6, rtc_state};
+        use esp_hal::time::Instant;
+
+        use crate::platform::{demo, esp32c6, mission_profile, power_log, rtc_state};
 
         let prev_proof = rtc_state::last_proof();
         let sample = esp32c6::read_env_sample();
         let cycle = rtc_state::cycle_count().saturating_add(1);
         let proof_changed = report.proof != prev_proof;
+        let active_ms = power_log::cycle_active_ms();
+        let profile = mission_profile::current();
+        let cycle_ms = Instant::now().duration_since_epoch().as_millis() as u32;
 
         serial_println!(
-            "[AETHER] cycle #{} — guest={} ({}) proof=0x{:016X} vector=0x{:02X} ({}) proof_changed={}",
+            "[AETHER] cycle #{} — guest={} ({}) proof=0x{:016X} prev=0x{:016X} chain={} payload={} mission={} vector=0x{:02X} ({}) active={}ms",
             cycle,
             report.guest_result,
             demo::guest_flags_text(report.guest_result),
             report.proof,
+            prev_proof,
+            if proof_changed { "LINKED" } else { "REPEAT" },
+            mission_profile::payload_name(profile.payload_slot),
+            profile.mission_id,
             report.vector,
             demo::vector_name(report.vector),
-            proof_changed,
+            active_ms,
         );
 
         demo::log_json_cycle(
             cycle,
             report.guest_result,
             report.proof,
+            prev_proof,
             report.vector,
             sample.pressure_atm,
             sample.temp_c,
             sample.dose_scaled,
             proof_changed,
+            profile.mission_id,
+            profile.payload_slot,
+            active_ms,
         );
 
-        rtc_state::record_cycle(report.proof, sample.pressure_atm.to_bits());
-        crate::platform::oled::show_cycle(cycle, report.guest_result, report.proof, report.vector);
-        if crate::platform::sd_log::log_cycle(
+        rtc_state::record_cycle(report.proof, sample.pressure_atm.to_bits(), cycle_ms);
+        crate::platform::oled::show_cycle(
             cycle,
             report.guest_result,
             report.proof,
             report.vector,
+            proof_changed,
+        );
+        if crate::platform::sd_log::log_cycle(
+            cycle,
+            report.guest_result,
+            report.proof,
+            prev_proof,
+            report.vector,
             sample.pressure_atm,
             sample.temp_c,
             sample.dose_scaled,
             proof_changed,
+            profile.mission_id,
+            profile.payload_slot,
+            active_ms,
         ) {
             serial_println!("[AETHER] SD — cycle #{} logged", cycle);
         }
+        power_log::log_power_budget(rtc_state::wake_timer_secs());
         esp32c6::status_led_off();
     }
 

@@ -10,3 +10,7 @@ license = "AGPL-3.0-or-later"
 name = "aerospace_payload"
 path = "src/lib.rs"
 crate-type = ["cdylib"]
+
+[features]
+default = []
+relaxed = []

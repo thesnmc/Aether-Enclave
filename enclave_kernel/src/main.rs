@@ -90,9 +90,27 @@ fn log_sensor_snapshot() {
 }
 
 #[cfg(target_arch = "riscv32")]
+fn log_mission_profile() {
+    use enclave_kernel::platform::mission_profile;
+
+    let p = mission_profile::current();
+    serial_println!(
+        "[AETHER] mission — id={} payload={} P_lim={:.3}atm D_lim={} leak={:.4}atm/s wake={}-{}s{}",
+        p.mission_id,
+        mission_profile::payload_name(p.payload_slot),
+        p.pressure_limit_atm,
+        p.dose_limit,
+        p.leak_rate_atm_s,
+        p.wake_min_secs,
+        p.wake_max_secs,
+        if p.from_sd { " (SD profile)" } else { " (defaults; pot>75%=RELAXED)" },
+    );
+}
+
+#[cfg(target_arch = "riscv32")]
 fn resolve_trigger() -> interrupts::HardwareInterrupt {
-    if enclave_kernel::platform::esp32c6::pressure_drop_wake() {
-        serial_println!("[AETHER] pressure drop detected — forcing vector 0x20");
+    if let Some(reason) = enclave_kernel::platform::esp32c6::pressure_wake_label() {
+        serial_println!("[AETHER] {reason} — forcing vector 0x20");
         return interrupts::HardwareInterrupt::AtmosphericPressureThreshold;
     }
     if let Some(trigger) = interrupts::detect_wake_trigger() {
@@ -138,7 +156,9 @@ fn esp_main() -> ! {
 
     enclave_kernel::platform::esp32c6::log_wake_cause();
     log_sensor_health(health);
+    let _profile = enclave_kernel::platform::mission_profile::load_from_sd();
     enclave_kernel::platform::esp32c6::apply_pot_mission_profile();
+    log_mission_profile();
     log_mission_banner(health);
     log_sensor_snapshot();
     enclave_kernel::platform::oled::show_boot(health.bmp390 && health.ads1115);

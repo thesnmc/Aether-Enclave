@@ -32,6 +32,8 @@ const LOG_META_SECTOR: u32 = 2048;
 const LOG_FIRST_SECTOR: u32 = 2049;
 const LOG_SECTOR_COUNT: u32 = 512;
 
+pub const PROFILE_SECTOR: u32 = 2047;
+
 struct SdState {
     spi: Spi<'static, Blocking>,
     cs: Output<'static>,
@@ -76,16 +78,29 @@ pub fn init(
     }
 }
 
+/// Read mission profile sector (2047) when SD is mounted.
+pub fn read_profile_sector() -> Option<[u8; 512]> {
+    let mut guard = SD.lock();
+    let state = guard.as_mut()?;
+    let mut buf = [0u8; 512];
+    read_block(state, PROFILE_SECTOR, &mut buf).ok()?;
+    Some(buf)
+}
+
 /// Append one cycle line to the on-card log (512-byte sector).
 pub fn log_cycle(
     cycle: u32,
     guest: i32,
     proof: u64,
+    prev_proof: u64,
     vector: u8,
     pressure: f32,
     temp_c: f32,
     dose: u32,
     proof_changed: bool,
+    mission_id: u32,
+    payload_slot: u8,
+    active_ms: u32,
 ) -> bool {
     let mut guard = SD.lock();
     let Some(state) = guard.as_mut() else {
@@ -118,16 +133,20 @@ pub fn log_cycle(
     let mut writer = ByteWriter::new(&mut sector[4..]);
     let _ = write!(
         writer,
-        "cycle={} guest={} flags={} proof=0x{:016X} vector=0x{:02X} P={:.3} T={:.1} D={} changed={}\n",
+        "cycle={} guest={} flags={} proof=0x{:016X} prev=0x{:016X} vector=0x{:02X} P={:.3} T={:.1} D={} changed={} mission={} payload={} active_ms={}\n",
         cycle,
         guest,
         demo::guest_flags_text(guest),
         proof,
+        prev_proof,
         vector,
         pressure,
         temp_c,
         dose,
         if proof_changed { 1 } else { 0 },
+        mission_id,
+        payload_slot,
+        active_ms,
     );
 
     if write_block(state, next, &sector).is_err() {
@@ -163,14 +182,23 @@ fn sd_init(state: &mut SdState) -> Result<(), ()> {
     }
 
     let mut ready = false;
-    for _ in 0..200 {
+    let mut idle_responses = 0u8;
+    for _ in 0..40 {
         send_cmd(state, CMD55, 0)?;
         let r = send_cmd(state, ACMD41, 0x4000_0000)?;
         if r & 0x01 == 0 {
             ready = true;
             break;
         }
-        Delay::new().delay_millis(10);
+        if r == 0xFF {
+            idle_responses = idle_responses.saturating_add(1);
+            if idle_responses >= 5 {
+                return Err(());
+            }
+        } else {
+            idle_responses = 0;
+        }
+        Delay::new().delay_millis(5);
         esp32c6::feed_watchdog();
     }
     if !ready {
